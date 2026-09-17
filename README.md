@@ -1,14 +1,3 @@
-> **This repository is a published mirror.** Every release of the arcnow.io MCP
-> server lands here as one commit, tagged `vX.Y.Z`, with the `npm pack` tarball
-> under [Releases](https://github.com/arcnow-io/arcnow-io-mcp/releases). Issues and pull requests are welcome
-> here. The maintainers' tooling (the pin gate against the SDK's history, the
-> fork proof against the contracts) is not part of the mirror, so `scripts/`
-> referred to below is absent; `@arcnow/sdk` is a path dependency, so clone
-> [arcnow-io/arcnow-io-sdk](https://github.com/arcnow-io/arcnow-io-sdk) as a
-> sibling directory named `sdk` and build `sdk/typescript` first.
-> Site: [www.arcnow.io](https://www.arcnow.io) - docs:
-> [docs.arcnow.io](https://docs.arcnow.io).
-
 # `@arcnow/mcp`
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant use
@@ -19,13 +8,41 @@ graduating, and, **only if the operator explicitly turns it on**, launch, buy,
 sell and rescue a stranded migration.
 
 Every chain interaction goes through
-[`@arcnow/sdk`](https://github.com/arcnow-io/arcnow-io-sdk), pinned to a commit in
-[`pins.json`](pins.json). Nothing here encodes a call or computes a curve.
+[`@arcnow/sdk`](https://www.npmjs.com/package/@arcnow/sdk), pinned to an exact
+published version in [`pins.json`](pins.json). Nothing here encodes a call or
+computes a curve.
 
+## Install and run
+
+The server is on npm as [`@arcnow/mcp`](https://www.npmjs.com/package/@arcnow/mcp)
+(Node 22.12 or newer). Run it straight from the registry:
+
+```sh
+npx -y @arcnow/mcp                  # read-only. The default, and the useful part.
+npx -y @arcnow/mcp --allow-writes   # can spend, if ARCNOW_PRIVATE_KEY is in the environment.
 ```
-node dist/index.js                  # read-only. The default, and the useful part.
-node dist/index.js --allow-writes   # can spend, if ARCNOW_PRIVATE_KEY is in the environment.
+
+Or tell an MCP client to. Claude Desktop, Cursor, Claude Code and the like all
+take this shape in their MCP server configuration:
+
+```json
+{
+  "mcpServers": {
+    "arcnow": {
+      "command": "npx",
+      "args": ["-y", "@arcnow/mcp"],
+      "env": { "ARCNOW_MCP_NETWORK": "arc-testnet" }
+    }
+  }
+}
 ```
+
+A writes-enabled client adds `"--allow-writes"` to `args` and puts the key
+**in a file**, never in the config: see [`examples/`](examples) for both shapes
+and [Configuration](#configuration) for every variable. To run from source
+instead, clone
+[arcnow-io/arcnow-io-mcp](https://github.com/arcnow-io/arcnow-io-mcp), then
+`npm ci && npm run build && node dist/index.js`; the SDK comes from npm.
 
 ---
 
@@ -373,72 +390,62 @@ token. Gas is always native USDC, whatever a token's quote.
 
 ## The SDK, and how the pin works
 
-`@arcnow/sdk` **is not published to npm.** `package.json` depends on it by
-path — `file:../sdk/typescript` — so a checkout of
-[`arcnow-io/sdk`](https://github.com/arcnow-io/arcnow-io-sdk) has to sit beside this one:
+`@arcnow/sdk` is published to npm from
+[arcnow-io/arcnow-io-sdk](https://github.com/arcnow-io/arcnow-io-sdk), one tagged
+release per version, and this server depends on it at an **exact version** —
+`"@arcnow/sdk": "0.1.3"`, never `^0.1.3`. The tool descriptions promise what one
+known SDK does; a range would let `npm install` move the code under them with no
+commit here saying so. Moving the pin is a pull request.
 
+[`pins.json`](pins.json) records it:
+
+```json
+"sdk": {
+  "package": "@arcnow/sdk",
+  "version": "0.1.3",
+  "integrity": "sha512-…",
+  "public_repo": "arcnow-io/arcnow-io-sdk",
+  "tag": "v0.1.3",
+  "why": ["what this server uses from that SDK, in prose"]
+}
 ```
-project/
-  sdk/          git clone https://github.com/arcnow-io/arcnow-io-sdk.git sdk
-  mcp/          this repository
-```
 
-npm **links** that directory into `node_modules`, which means "which SDK am I
-running" is answered by whatever somebody happens to have checked out — a
-branch, a rebase, an edit made five minutes ago. None of that fails loudly. The
-server still compiles, the tool descriptions still promise what they promised,
-and the call that reaches the chain is encoded by code this repository has never
-seen.
+`integrity` is the sha512 of that version's tarball, as npm records it in
+`package-lock.json` and serves it as `dist.integrity`. **The tarball is the
+surface**: every module, the generated ABIs that encode every call, the
+`networks.json` every address comes from — one hash. (Until the SDK was
+published this file hashed its sources file by file and the gate recompiled its
+`dist/`; the integrity replaces all of that.)
 
-So the SDK is pinned the way `arcnow-io/sdk` pins `arcnow-io/contracts`, and
 `scripts/check-pins.sh` (run straight after the install by `scripts/preflight.sh`)
-enforces five things:
+enforces four things:
 
-0. `sdk.commit` is a **full 40-hex commit**, never a ref that resolves to
-   whatever it names today.
-1. `package.json` still depends on the SDK **by path**. A `file:` specifier that
-   became a version range would resolve through the public registry, under a
-   name nobody in this project has claimed.
-2. `node_modules/@arcnow/sdk` really is that sibling directory — linked, not
-   copied — carries the pinned version, and its `dist/` is **exactly what its
-   sources compile to**. The gate compiles the SDK again, with the SDK's own
-   TypeScript, into a temporary directory and compares every emitted file. This
-   server imports `dist/`, not `src/`, so a `dist/` left over from an older
-   checkout runs old code under new hashes — which is the state the sibling
-   checkout was found in when the pin moved off `ac52eaa`, with no `dist/pool.js`
-   at all, and the old gate passed it.
-3. The sibling's **working tree** hashes to `surface_sha256`, with **no surface
-   file unpinned**. The linked directory *is* the working tree, so an
-   uncommitted edit — or an uncommitted new module — is code this server runs
-   under no git ref at all.
-4. The sibling repository has `sdk.commit`, **it is on `sdk.branch`**, and it
-   carries exactly the pinned files with the pinned bytes — the only check that
-   can see that the recorded hashes belong to the commit named. It also
-   **reports, without failing**, when the SDK has moved past the pin and whether
-   the surface changed on the way. A pin is supposed to lag.
+1. `package.json` depends on the SDK at **exactly** `sdk.version`. A range, a
+   `file:` path or another number fails, by name.
+2. `package-lock.json`'s entry for it carries that version, resolves to the npm
+   registry, and its `integrity` **is** `sdk.integrity` — the link between the
+   version and the bytes; npm refuses to install a tarball that does not hash to
+   it.
+3. `node_modules/@arcnow/sdk/package.json` is that version — what the server
+   actually compiles against and imports.
+4. The registry has that version and serves it with that `dist.integrity`, so
+   the pinned bytes are the published bytes. This needs the network: unreachable
+   is a **warning** (a laptop on a train is not a broken pin) unless
+   `ARCNOW_REQUIRE_REGISTRY=1`, which CI sets; a 404 is always a failure.
 
-Together: `dist/` is the compilation of the working tree, the working tree is the
-pinned bytes, and the pinned bytes are the commit on the branch.
+Together: the manifest asks for one version, the lockfile binds it to one
+tarball, `node_modules` holds it, and the registry says those are the bytes it
+serves under that number. `test/unit/check-pins.test.ts` builds real roots with
+a fake `npm` on `PATH` and breaks each link on purpose — a range, a path, a
+foreign tarball, a stale install, a version the registry never had, a registry
+that cannot be reached.
 
-**What is pinned is a rule, not a list:** `networks.json`,
-`typescript/package.json`, and every file under `typescript/src` except
-`typescript/src/errors/`. A module the SDK adds is surface the moment it exists.
-The generated ABIs are inside the rule because they encode every call, and the
-generated `networks.json` because it is the copy the SDK compiles its
-**addresses** from. `errors/` is outside it: message prose behind a surface
-`index.ts` already pins, where pinning would make every improved error message
-a false alarm. `test/unit/check-pins.test.ts` builds real repositories and
-breaks each link on purpose — a stale build, an unpinned module, an uncommitted
-edit, a ref for a commit, a commit off the branch.
-
-Moving the pin is a commit of its own: check the SDK out at the commit and build
-it, run `scripts/check-pins.sh --record` — which records `sdk.commit` and every
-surface hash from `HEAD`, and refuses an edit no commit carries — update
-`sdk.why`, run preflight, and say what changed in the SDK surface and what it
-meant for the tools. A tool description that still promises what an older SDK
-did is a model quoting a wrong price.
-
-Point the gate at a checkout somewhere else with `ARCNOW_SDK_DIR`.
+Moving the pin is a commit of its own: `npm install @arcnow/sdk@X.Y.Z
+--save-exact`, `npm ci`, `scripts/check-pins.sh --record` — which records the
+version, the lockfile's integrity and the tag, and refuses a range or a version
+the registry does not have — update `sdk.why`, run preflight, and say what
+changed in the SDK surface and what it meant for the tools. A tool description
+that still promises what an older SDK did is a model quoting a wrong price.
 
 ---
 
@@ -458,16 +465,18 @@ repository in this org has made. **`scripts/preflight.sh` is the gate**; the
 workflow is a transcription of it, kept because a clean-checkout run is the one
 thing a local run cannot prove.
 
-The fork proof starts one container, an anvil fork of Arc testnet from the
-Foundry image `pins.json` pins, labelled `io.arcnow.mcp.test`, and deploys
-arcnow.io's 3.x multi-quote contracts onto it with the pinned SDK's
-`scripts/fork-deploy-stack.sh`. Arc testnet now runs a 3.x stack of its own,
+Everything but the fork proof needs nothing beyond `npm ci`: the SDK comes from
+npm. The fork proof is the maintainers' **private infrastructure**: it starts one
+container, an anvil fork of Arc testnet from the Foundry image `pins.json` pins,
+labelled `io.arcnow.mcp.test`, and deploys arcnow.io's 3.x multi-quote contracts
+onto it with the private `arcnow-io/sdk` checkout's `scripts/fork-deploy-stack.sh`
+(`ARCNOW_SDK_DIR`, default `../sdk`). Arc testnet now runs a 3.x stack of its own,
 deployed on 2026-09-15, but the fork is taken at a pinned, already-cached block
 from before that, where the live contracts are the 2.x ones the SDK refuses — and
 a proof that deploys its own stack does not depend on what happens to be live
-anyway. That needs `ARCNOW_CONTRACTS_DIR`, a checkout
-of arcnow-io/contracts at the commit the SDK's `pins.json` names, and forge at
-the release it names. Its harness —
+anyway. That also needs `ARCNOW_CONTRACTS_DIR`, a checkout
+of arcnow-io/contracts at the commit that SDK checkout's `pins.json` names, and
+forge at the release it names. Its harness —
 copied from `arcnow-io/sdk`'s, not imported, because that repository's tests are
 not part of the pinned surface — removes it on every exit path, sweeps only its
 own label, and touches nothing else on a shared daemon.

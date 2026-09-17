@@ -11,6 +11,10 @@ the first one below, is kept as written.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-17
+
+- Depend on the published @arcnow/sdk, exactly, and pin it by its tarball
+
 ## [0.1.0] - 2026-09-17
 
 The first published release. An MCP server that lets an AI assistant use

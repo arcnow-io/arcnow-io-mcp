@@ -1,11 +1,11 @@
 /**
  * The pin, checked from inside the program rather than only by a shell script.
  *
- * `scripts/check-pins.sh` proves the SDK checkout is the one pinned. These
- * prove the things a hash cannot: that the chain facts this repository restates
- * for a reader agree with the SDK's own `networks.json`, and that the version
- * pinned is the version installed. Two copies of a chain id is how one of them
- * ends up wrong.
+ * `scripts/check-pins.sh` proves the installed SDK is the published version
+ * pinned. These prove the things a hash cannot: that the chain facts this
+ * repository restates for a reader agree with the SDK's own `networks.json`,
+ * and that the version pinned is the version installed. Two copies of a chain
+ * id is how one of them ends up wrong.
  */
 
 import { readFileSync } from "node:fs";
@@ -19,10 +19,9 @@ const pins = JSON.parse(readFileSync(`${root}/pins.json`, "utf8")) as {
   sdk: {
     package: string;
     version: string;
-    commit: string;
-    default_checkout: string;
-    path: string;
-    surface_sha256: Record<string, string>;
+    integrity: string;
+    public_repo: string;
+    tag: string;
   };
   images: { foundry: string };
   chain: {
@@ -35,6 +34,9 @@ const pins = JSON.parse(readFileSync(`${root}/pins.json`, "utf8")) as {
 };
 const pkg = JSON.parse(readFileSync(`${root}/package.json`, "utf8")) as {
   dependencies: Record<string, string>;
+};
+const lock = JSON.parse(readFileSync(`${root}/package-lock.json`, "utf8")) as {
+  packages: Record<string, { version: string; resolved?: string; integrity?: string }>;
 };
 
 describe("pins.json against the SDK it pins", () => {
@@ -62,22 +64,18 @@ describe("pins.json against the SDK it pins", () => {
     expect(installed.version).toBe(pins.sdk.version);
   });
 
-  it("names a full 40-hex commit, never a branch tip or a short hash", () => {
-    expect(pins.sdk.commit).toMatch(/^[0-9a-f]{40}$/);
+  it("names an exact version, a sha512 of its tarball, and the tag of that release", () => {
+    expect(pins.sdk.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pins.sdk.integrity).toMatch(/^sha512-[A-Za-z0-9+/]+=*$/);
+    expect(pins.sdk.tag).toBe(`v${pins.sdk.version}`);
+    expect(pins.sdk.public_repo).toBe("arcnow-io/arcnow-io-sdk");
   });
 
-  it("pins the SDK modules the graduated-token tools bind to", () => {
-    const pinned = Object.keys(pins.sdk.surface_sha256);
-    for (const file of [
-      "typescript/src/pool.ts",
-      "typescript/src/trade.ts",
-      "typescript/src/index.ts",
-      "typescript/src/generated/networks.json",
-      "typescript/src/generated/abi/external/uniswapV4Router04.ts",
-    ]) {
-      expect(pinned).toContain(file);
-    }
-    expect(pinned.filter((file) => file.includes("/src/errors/"))).toEqual([]);
+  it("binds the version to the pinned tarball in the lockfile, from the npm registry", () => {
+    const entry = lock.packages[`node_modules/${pins.sdk.package}`];
+    expect(entry?.version).toBe(pins.sdk.version);
+    expect(entry?.integrity).toBe(pins.sdk.integrity);
+    expect(entry?.resolved).toMatch(/^https:\/\/registry\.npmjs\.org\//);
   });
 
   it("pins the Foundry image the fork proof runs to an exact release, never latest", () => {
@@ -86,9 +84,8 @@ describe("pins.json against the SDK it pins", () => {
 });
 
 describe("package.json", () => {
-  it("depends on the SDK by path, because it is not published to npm", () => {
-    expect(pkg.dependencies[pins.sdk.package])
-      .toBe(`file:${pins.sdk.default_checkout}/${pins.sdk.path}`);
+  it("depends on the published SDK at exactly the pinned version, never a range", () => {
+    expect(pkg.dependencies[pins.sdk.package]).toBe(pins.sdk.version);
   });
 });
 

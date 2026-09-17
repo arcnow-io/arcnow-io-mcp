@@ -1,11 +1,8 @@
 {
   "mcpServers": {
     "arcnow": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/arcnow-io/mcp/dist/index.js",
-        "--allow-writes"
-      ],
+      "command": "npx",
+      "args": ["-y", "@arcnow/mcp", "--allow-writes"],
       "env": {
         "ARCNOW_MCP_NETWORK": "arc-testnet",
         "ARCNOW_PRIVATE_KEY_FILE": "/run/secrets/arcnow-signing-key",
