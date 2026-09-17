@@ -1,6 +1,6 @@
 {
   "name": "@arcnow/mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "An MCP server for arcnow.io on Arc: read the curves, quote a trade, and — only when the operator opts in — launch, buy and sell.",
   "license": "GPL-3.0-or-later",
   "type": "module",

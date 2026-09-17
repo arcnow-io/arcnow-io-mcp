@@ -22,8 +22,27 @@ npx -y @arcnow/mcp                  # read-only. The default, and the useful par
 npx -y @arcnow/mcp --allow-writes   # can spend, if ARCNOW_PRIVATE_KEY is in the environment.
 ```
 
-Or tell an MCP client to. Claude Desktop, Cursor, Claude Code and the like all
-take this shape in their MCP server configuration:
+Every client below runs that same command with `ARCNOW_MCP_NETWORK` set. The
+examples say `arc-mainnet`, where [arcnow.io](https://arcnow.io) is live.
+*The currently published server still ships the previous, testnet-only preset
+and refuses `arc-mainnet` by name; mainnet lands in the next release — until
+then use `arc-testnet`.*
+
+**Write mode, in every client:** add `--allow-writes` to the arguments and put
+the signing key **in a file** the server reads through `ARCNOW_PRIVATE_KEY_FILE`
+— never the key itself in a client config, which gets committed and
+screenshotted. Read-only needs no key at all. Every variable is in
+[Configuration](#configuration); [`examples/`](examples) has both shapes.
+
+### Claude Code
+
+```sh
+claude mcp add --env ARCNOW_MCP_NETWORK=arc-mainnet --scope user arcnow -- npx -y @arcnow/mcp
+```
+
+`--scope` is `local` (this project, you only; the default), `project` (checked
+into `.mcp.json` at the project root, shared with the team) or `user` (every
+project). The project-file form:
 
 ```json
 {
@@ -31,17 +50,107 @@ take this shape in their MCP server configuration:
     "arcnow": {
       "command": "npx",
       "args": ["-y", "@arcnow/mcp"],
-      "env": { "ARCNOW_MCP_NETWORK": "arc-testnet" }
+      "env": { "ARCNOW_MCP_NETWORK": "arc-mainnet" }
     }
   }
 }
 ```
 
-A writes-enabled client adds `"--allow-writes"` to `args` and puts the key
-**in a file**, never in the config: see [`examples/`](examples) for both shapes
-and [Configuration](#configuration) for every variable. To run from source
-instead, clone
-[arcnow-io/arcnow-io-mcp](https://github.com/arcnow-io/arcnow-io-mcp), then
+### Claude Desktop
+
+`claude_desktop_config.json` — macOS
+`~/Library/Application Support/Claude/claude_desktop_config.json`, Windows
+`%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "arcnow": {
+      "command": "npx",
+      "args": ["-y", "@arcnow/mcp"],
+      "env": { "ARCNOW_MCP_NETWORK": "arc-mainnet" }
+    }
+  }
+}
+```
+
+### Codex
+
+`~/.codex/config.toml` (or `.codex/config.toml` in a project):
+
+```toml
+[mcp_servers.arcnow]
+command = "npx"
+args = ["-y", "@arcnow/mcp"]
+
+[mcp_servers.arcnow.env]
+ARCNOW_MCP_NETWORK = "arc-mainnet"
+```
+
+Or from the CLI: `codex mcp add arcnow --env ARCNOW_MCP_NETWORK=arc-mainnet -- npx -y @arcnow/mcp`.
+
+### Cursor
+
+`.cursor/mcp.json` in the project (or `~/.cursor/mcp.json` for every project):
+
+```json
+{
+  "mcpServers": {
+    "arcnow": {
+      "command": "npx",
+      "args": ["-y", "@arcnow/mcp"],
+      "env": { "ARCNOW_MCP_NETWORK": "arc-mainnet" }
+    }
+  }
+}
+```
+
+### VS Code (Copilot agent mode)
+
+`.vscode/mcp.json` — note the key is `servers`, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "arcnow": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@arcnow/mcp"],
+      "env": { "ARCNOW_MCP_NETWORK": "arc-mainnet" }
+    }
+  }
+}
+```
+
+For write mode, VS Code's `inputs` can prompt for the key-file path instead of
+writing it into the file; see its MCP documentation for the `${input:…}` form.
+
+### Gemini CLI
+
+`~/.gemini/settings.json` (or `.gemini/settings.json` in a project):
+
+```json
+{
+  "mcpServers": {
+    "arcnow": {
+      "command": "npx",
+      "args": ["-y", "@arcnow/mcp"],
+      "env": { "ARCNOW_MCP_NETWORK": "arc-mainnet" }
+    }
+  }
+}
+```
+
+Or `gemini mcp add -e ARCNOW_MCP_NETWORK=arc-mainnet arcnow npx -y @arcnow/mcp`.
+
+### Windsurf, Cline
+
+Both take the generic `mcpServers` JSON above — the same `command`, `args` and
+`env` — in their MCP settings file.
+
+### From source
+
+Clone [arcnow-io/arcnow-io-mcp](https://github.com/arcnow-io/arcnow-io-mcp), then
 `npm ci && npm run build && node dist/index.js`; the SDK comes from npm.
 
 ---
@@ -417,214 +526,50 @@ surface**: every module, the generated ABIs that encode every call, the
 published this file hashed its sources file by file and the gate recompiled its
 `dist/`; the integrity replaces all of that.)
 
-`scripts/check-pins.sh` (run straight after the install by `scripts/preflight.sh`)
-enforces four things:
-
-1. `package.json` depends on the SDK at **exactly** `sdk.version`. A range, a
-   `file:` path or another number fails, by name.
-2. `package-lock.json`'s entry for it carries that version, resolves to the npm
-   registry, and its `integrity` **is** `sdk.integrity` — the link between the
-   version and the bytes; npm refuses to install a tarball that does not hash to
-   it.
-3. `node_modules/@arcnow/sdk/package.json` is that version — what the server
-   actually compiles against and imports.
-4. The registry has that version and serves it with that `dist.integrity`, so
-   the pinned bytes are the published bytes. This needs the network: unreachable
-   is a **warning** (a laptop on a train is not a broken pin) unless
-   `ARCNOW_REQUIRE_REGISTRY=1`, which CI sets; a 404 is always a failure.
-
-Together: the manifest asks for one version, the lockfile binds it to one
-tarball, `node_modules` holds it, and the registry says those are the bytes it
-serves under that number. `test/unit/check-pins.test.ts` builds real roots with
-a fake `npm` on `PATH` and breaks each link on purpose — a range, a path, a
-foreign tarball, a stale install, a version the registry never had, a registry
-that cannot be reached.
-
-Moving the pin is a commit of its own: `npm install @arcnow/sdk@X.Y.Z
---save-exact`, `npm ci`, `scripts/check-pins.sh --record` — which records the
-version, the lockfile's integrity and the tag, and refuses a range or a version
-the registry does not have — update `sdk.why`, run preflight, and say what
-changed in the SDK surface and what it meant for the tools. A tool description
-that still promises what an older SDK did is a model quoting a wrong price.
+Before every release the maintainers verify that the manifest, the lockfile, the
+installed package and the registry all name that one tarball; moving the pin is a
+pull request that reads the SDK's changelog and re-reads every tool description.
 
 ---
 
-## Running the gates
+## Testing
 
 ```bash
-./scripts/preflight.sh              # install, pins, lint, typecheck, build, tests, fork proof
-./scripts/preflight.sh --no-install
-./scripts/preflight.sh --no-chain   # everything but the fork proof
-./scripts/check-pins.sh             # just the pin
-npm test                            # just the unit suite — no chain, no container, no key
-npm run test:fork                   # just the fork proof — needs Docker
+npm test     # the unit suite: no chain, no container, no key
 ```
 
-`.github/workflows/ci.yml` is `workflow_dispatch:` only, the same decision every
-repository in this org has made. **`scripts/preflight.sh` is the gate**; the
-workflow is a transcription of it, kept because a clean-checkout run is the one
-thing a local run cannot prove.
-
-Everything but the fork proof needs nothing beyond `npm ci`: the SDK comes from
-npm. The fork proof is the maintainers' **private infrastructure**: it starts one
-container, an anvil fork of Arc testnet from the Foundry image `pins.json` pins,
-labelled `io.arcnow.mcp.test`, and deploys arcnow.io's 3.x multi-quote contracts
-onto it with the private `arcnow-io/sdk` checkout's `scripts/fork-deploy-stack.sh`
-(`ARCNOW_SDK_DIR`, default `../sdk`). Arc testnet now runs a 3.x stack of its own,
-deployed on 2026-09-15, but the fork is taken at a pinned, already-cached block
-from before that, where the live contracts are the 2.x ones the SDK refuses — and
-a proof that deploys its own stack does not depend on what happens to be live
-anyway. That also needs `ARCNOW_CONTRACTS_DIR`, a checkout
-of arcnow-io/contracts at the commit that SDK checkout's `pins.json` names, and
-forge at the release it names. Its harness —
-copied from `arcnow-io/sdk`'s, not imported, because that repository's tests are
-not part of the pinned surface — removes it on every exit path, sweeps only its
-own label, and touches nothing else on a shared daemon.
-
-### What the tests prove
+It runs against a fake chain that does exactly what each test says, and proves
+what can be proved offline:
 
 - **A key is never an argument.** Every published schema is walked for
-  credential-shaped field names and for descriptions that ask for one; every
-  schema is asserted strict; and passing `privateKey` or `mnemonic` anyway is
-  asserted to be refused, named, answered with "rotate it", and to leave the
-  port untouched.
-- **A write refuses without the opt-in.** Every write tool, called on a
-  read-only server, is asserted to error, to name `--allow-writes` and
-  `ARCNOW_PRIVATE_KEY`, to tell the model not to ask a user for a key — and,
-  the assertion that carries the weight, **to have sent nothing**.
-- **Both spend ceilings stop a transaction rather than annotate one**, on a
-  curve and in a pool alike, **per quote token**: a USDC-only configuration
-  refuses a EURC buy and launch; an EURC cap allows up to it and refuses a raw
-  unit above; a typo'd cap variable refuses to start; a USDC cap does not apply
-  to EURC or the reverse; a quote the network does not list is refused.
-- **Every amount is labelled with its own quote** — native, a 6-decimal and an
-  18-decimal ERC-20 — a pool's quote is the SDK's in either currency order, an
-  input with more decimals than its quote is refused, and an ERC-20 spend's
-  approve is reported whether it was sent or not.
-- **The gas trap is handled**, for a buy and for a launch whose initial buy
-  graduates the curve.
-- **The venues are told apart.** A migrated token is quoted and traded in its
-  pool through `client.trade`; a stranded one is refused everywhere with
-  `arcnow_migrate` named; a curve-only parameter in a pool and a pool-only one
-  on a curve are refused with nothing sent.
-- **The sell approval is gated and disclosed.** Never sent without
-  `approveRouter: true`, never for more than the amount sold, not sent when the
-  allowance already covers the sale, reported in full, and still reported when
-  the sell after it fails.
-- **The reports say true things.** Fees broken out, a pool's two charges apart,
-  an absent referrer's share named as going to the platform, the average fill
-  price distinguished from the spot price, graduated distinguished from
-  migrated, an undecodable pool revert explained cautiously rather than bare.
-- **The pin gate fails when it should.** See above.
-- **The wire works.** A real MCP client against a real MCP server over an
-  in-memory transport, and — in the fork proof — over stdio against the built
-  server.
-- **Against the 3.x contracts deployed onto a fork of Arc testnet**
-  (`test/fork/mcp.fork.test.ts`), the built server — started with
-  `ARCNOW_MCP_NETWORK_FILE` naming the deployed stack — driven by a real MCP
-  client lists the quote tokens from the deployed registry in at most three
-  `eth_call`s with each one's cap, launches a native USDC
-  token on the launchpad, reads it
-  back with its quote token, `r0Wad` and `y0Wad`, buys it on its curve,
-  watches an impersonated Arc account graduate it, then quotes, buys and sells it
-  in its Uniswap v4 pool through the live router — and sells a second token back
-  to its curve — and launches a token in EURC, with its exact approve and exactly
-  the total pulled, buys it in EURC, and has a buy above the 50 EURC cap refused
-  with nothing sent. Every figure is checked against the chain with viem, not through
-  the server: every quote equals its fill, to the wei; exactly the amount and
-  the gas left the signer; the sell's approval is one `Approval` log to the
-  router for exactly the amount sold, used up by the sale; the recipient is paid
-  exactly what the report says; a swap's fee payout matches the hook's
-  `FeesDistributed` log; the refusals leave the signer's nonce where it was; and
-  the USDC ERC-20 predeploy comes back as `AddressIsNotACurve`. The server's RPC
-  goes through a counting proxy, and the per-call request counts are printed.
-- **One curve, and nothing else priced.** Against the fake, whose version
-  checks are the SDK's own `assertCurveVersion` and `assertPlatformVersion`: no
-  report names a curve kind or a stack, an `@1` curve, platform or fee hook is
-  refused by name with nothing quoted or sent, and the launch scan reads the one
-  launchpad from its deployment block.
+  credential-shaped field names and asserted strict; passing `privateKey` or
+  `mnemonic` anyway is refused, named, answered with "rotate it", and sends
+  nothing.
+- **A write refuses without the opt-in**, names `--allow-writes` and
+  `ARCNOW_PRIVATE_KEY`, and has sent nothing.
+- **Both spend ceilings stop a transaction**, on a curve and in a pool, per
+  quote token; a typo'd cap variable refuses to start; a USDC cap does not apply
+  to EURC or the reverse.
+- **Every amount is labelled with its own quote**, an input with more decimals
+  than its quote is refused, and an ERC-20 approve is reported whether it was
+  sent or not.
+- **The gas trap is handled**, the venues are told apart (a stranded token is
+  refused everywhere with `arcnow_migrate` named), the sell approval is never
+  sent without `approveRouter: true` and never for more than the amount sold,
+  and the reports say true things: fees broken out, average fill price apart
+  from spot, graduated apart from migrated.
+- **The wire works**: a real MCP client against a real MCP server over an
+  in-memory transport.
 
-### What they do not prove
-
-- **Not Arc's own execution semantics.** A fork re-executes locally with
-  anvil's EVM and disagrees with Arc about blocklisted transfers, EIP-1153, the
-  EIP-7708 system emitter and burn-to-zero without saying so.
-- **Not a EURC pool against a chain.** The fork proof launches a EURC token,
-  buys it on its curve with the exact approve, and holds the 50 EURC cap; a
-  EURC token's pool is unit-tested against the fake.
-- **Not every path against a chain.** The fork proof covers a launch, curve
-  trades, graduation and pool trades. A
-  migration through `arcnow_migrate`, a graduating buy through `arcnow_buy` (the
-  proof graduates its token through the SDK, so that nothing credits the
-  server's signer), a token that graduated but never migrated — there is none on
-  Arc testnet to fork — and a curve, platform or hook whose version the SDK
-  refuses are
-  unit-tested here against the fake, and proved against a chain, where they are
-  at all, by the SDK's own fork suite. If you change how a tool calls the SDK,
-  run the SDK's preflight too.
-- **Not that the tool descriptions are true.** Those are prose, read by a model
-  deciding whether to spend somebody's money. When the pin moves, that is a
-  person's job.
-- **Not that a model behaves.** Every guard in this server is a bound on
-  damage, not a guarantee of judgement.
-
----
-
-## What made a clean surface awkward
-
-Five things, all worth fixing upstream rather than here — and one of them now is.
-
-**The SDK cannot enumerate tokens.** There is no `recentLaunches()` anywhere in
-`@arcnow/sdk`, and its `networks.json` explains why a preset cannot carry one: a
-token and its curve come from the `Launched` log, one pair per launch, and there
-are as many as there have been launches. But "show me the recent tokens" is the
-first thing anybody asks an assistant, so `arcnow_list_tokens` reads that log
-directly — with the SDK's own pinned ABI, through the SDK's own configured
-client, at the SDK's own launchpad address, adding nothing but the scan. It is
-the only place in this repository that talks to the chain outside an SDK method,
-and it is in `src/sdk-port.ts` with a comment saying so. A
-`launchpad.recentLaunches()` belongs in the SDK, where the forked-chain suite
-could test it against a real chain; here it is tested against a fake.
-
-Because the scan is a bounded walk backwards from the tip rather than an index,
-`arcnow_list_tokens` reports the block window it covered and says plainly when
-it stopped on its budget with history unread. An assistant must not conclude a
-token does not exist from a tool that only ever saw a window.
-
-**The SDK's handles are classes with private fields.** `Curve`, `Token`,
-`Launchpad` and `PlatformRegistry` are nominally typed, so nothing can be
-assigned to them — a test cannot construct a stand-in, and there is no seam to
-substitute one. That is why `src/sdk-port.ts` exists: a set of interfaces the
-SDK's handles already satisfy, wrapping nothing and computing nothing, so that a
-fake can drive every tool through the states that matter and are hardest to
-reach on a real chain (a buy that graduates, a curve that graduated and never
-migrated, a cost that moved between the quote and the order). If the SDK exposed
-interfaces alongside its classes, that file would be a re-export.
-
-**The SDK has no reader for a pool's price.** A pool quote is the real fill, but
-"how far is that from the pool's price" needs the pool's price, and there is no
-`slot0`/`sqrtPriceX96` read anywhere in `@arcnow/sdk`. Reading the PoolManager's
-storage here would be the second, unpinned copy of chain code this server exists
-not to have. So the spot price is the SDK's own quote of a tiny probe buy with
-both fees taken out — accurate to far below the printed digits, one extra
-`eth_call`, and labelled as what it is. A `pool.spotPrice()` belongs in the SDK.
-The pool's LP fee is likewise not in a quote; it is read from `pool.key()`.
-
-**Fixed upstream: a revert inside the pool.** A revert from inside the fee hook,
-or a failed transfer out of the PoolManager, arrives wrapped in Uniswap v4's
-`WrappedError`. It used to surface as a bare `UnknownRevert`. Since sdk#7 the SDK
-unwraps it and names the failed transfer (`NativeTransferFailed` /
-`ERC20TransferFailed`), so this server only shows what the SDK decoded.
-
-**A pool sell quote needs a real holder.** The SDK overrides the router
-allowance for a sell simulation but deliberately not the balance, so
-`arcnow_quote_sell` on a pool needs `holder` on a read-only server. That is the
-right call, and it is why that argument exists.
-
-Nothing else got in the way. In particular, the SDK's four amount types, its
-refusal to default a slippage floor, its explicit `gasLimit`, its
-`migratedInThisTransaction` flag and its by-selector error decoding are each the
-reason a corresponding class of mistake is not reachable from here.
+What the unit suite cannot prove — that the built server, driven by a real MCP
+client over stdio, lists the quote tokens, launches, buys and sells a token on its
+curve and in its Uniswap v4 pool, and launches and buys a token priced in EURC
+under the EURC cap, against arcnow.io's real contracts, every quote equal to its
+fill to the wei — the maintainers prove before every release, on an anvil fork of
+Arc testnet with those contracts deployed onto it. A fork re-executes with anvil's
+EVM, so Arc's own execution semantics are outside even that; and no test can
+prove that a tool description is true or that a model behaves — every guard here
+is a bound on damage, not a guarantee of judgement.
 
 ---
 

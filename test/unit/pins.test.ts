@@ -1,7 +1,7 @@
 /**
  * The pin, checked from inside the program rather than only by a shell script.
  *
- * `scripts/check-pins.sh` proves the installed SDK is the published version
+ * The maintainers' pin gate proves the installed SDK is the published version
  * pinned. These prove the things a hash cannot: that the chain facts this
  * repository restates for a reader agree with the SDK's own `networks.json`,
  * and that the version pinned is the version installed. Two copies of a chain

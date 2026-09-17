@@ -11,6 +11,12 @@ the first one below, is kept as written.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-17
+
+### Changed
+- The README is written for people who run the server: per-client setup for Claude Code, Claude Desktop, Codex, Cursor, VS Code and Gemini CLI, all via `npx -y @arcnow/mcp`; what `npm test` proves. The maintainers' notes on the SDK pin and the gates live outside the published tree.
+- The currently published preset is Arc testnet only; the mainnet preset arrives with the next SDK update.
+
 ## [0.1.1] - 2026-09-17
 
 - Depend on the published @arcnow/sdk, exactly, and pin it by its tarball
