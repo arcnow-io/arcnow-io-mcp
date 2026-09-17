@@ -1,0 +1,55 @@
+{
+  "name": "@arcnow/mcp",
+  "version": "0.1.0",
+  "description": "An MCP server for arcnow.io on Arc: read the curves, quote a trade, and — only when the operator opts in — launch, buy and sell.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "bin": {
+    "arcnow-mcp": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@arcnow/sdk": "file:../sdk/typescript",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "viem": "^2.56.3",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/node": "^22.10.2",
+    "eslint": "^10.10.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arcnow-io/arcnow-io-mcp.git"
+  },
+  "homepage": "https://github.com/arcnow-io/arcnow-io-mcp",
+  "bugs": {
+    "url": "https://github.com/arcnow-io/arcnow-io-mcp/issues"
+  },
+  "author": "arcnow.io"
+}

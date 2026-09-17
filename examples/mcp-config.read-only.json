@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "arcnow": {
+      "command": "node",
+      "args": ["/absolute/path/to/arcnow-io/mcp/dist/index.js"],
+      "env": {
+        "ARCNOW_MCP_NETWORK": "arc-testnet"
+      }
+    }
+  }
+}
