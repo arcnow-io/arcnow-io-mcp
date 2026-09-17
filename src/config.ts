@@ -57,7 +57,15 @@
  * the network sharing a symbol is a startup error, because their two caps would
  * be one variable.
  *
- * # A network the SDK has no preset for
+ * # Two presets, and a network the SDK has no preset for
+ *
+ * `ARCNOW_MCP_NETWORK` is `arc-mainnet` — Arc mainnet, chain 5042, where
+ * arcnow.io is live and every write spends real money — or `arc-testnet`, the
+ * rehearsal network at chain 5042002, which runs the same contracts at other
+ * addresses. Both resolve through the SDK's `resolveNetwork`, which is the only
+ * source of an address in this server. The default is `arc-testnet`: a server
+ * started with no network named should not be pointed at real money by
+ * omission.
  *
  * `ARCNOW_MCP_NETWORK_FILE` names a JSON document in the SDK's `CustomNetwork`
  * shape — `rpcUrl`, `chainId`, `contracts`, and optionally `quoteTokens` and
@@ -71,8 +79,8 @@ import { readFileSync } from "node:fs";
 
 import type { Account, Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import type { CustomNetwork, NetworkConfig, QuoteTokenInfo } from "@arcnow/sdk";
-import { isArcNowError, NATIVE_USDC, QuoteAmount, resolveNetwork } from "@arcnow/sdk";
+import type { CustomNetwork, Network, NetworkConfig, QuoteTokenInfo } from "@arcnow/sdk";
+import { isArcNowError, NATIVE_USDC, NETWORKS, QuoteAmount, resolveNetwork } from "@arcnow/sdk";
 
 /** Bad configuration, phrased for the person who wrote it. */
 export class ConfigError extends Error {
@@ -244,9 +252,10 @@ export const DEFAULTS = {
   network: "arc-testnet",
   /**
    * 100 USDC a call. Low enough that a prompt-injected "buy everything" is a
-   * bounded accident and not a bounded-by-your-balance one; high enough that
-   * the shipped 2 USDC launch fee plus a real first buy fits under it. An
-   * operator who means to spend more says so once, at startup, on purpose.
+   * bounded accident and not a bounded-by-your-balance one; high enough that a
+   * real first buy fits under it (launching itself is free on arcnow.io's
+   * networks). An operator who means to spend more says so once, at startup, on
+   * purpose — and on arc-mainnet every one of these is real money.
    *
    * Native USDC only. Every other quote has NO default: spending it is refused
    * until the operator names a cap for it.
@@ -340,18 +349,9 @@ export function loadConfig(
   }
   const network = namedNetwork ?? DEFAULTS.network;
 
-  // Refused here rather than at the first call, so the operator finds out when
-  // they start the server instead of when a model tries to trade. The SDK
-  // refuses it too, by name; this is the same refusal, said earlier.
-  if (networkFile === undefined && network === "arc-mainnet") {
-    throw new ConfigError(
-      "arc-mainnet does not exist. arcnow.io is not deployed to an Arc mainnet, every "
-      + "address in the SDK's preset for it is null on purpose, and this server will not "
-      + "invent one. Use arc-testnet, or point ARCNOW_MCP_NETWORK at a network name the "
-      + "SDK knows.",
-    );
-  }
-
+  // Both presets — arc-mainnet, where arcnow.io is live with real money, and
+  // arc-testnet, the rehearsal — resolve through the SDK, which is the only
+  // source of an address here. A name the SDK does not know is refused by it.
   const networkConfig = networkFile === undefined
     ? resolvePreset(network)
     : readNetworkFile(networkFile, readFile);
@@ -453,14 +453,19 @@ export function loadConfig(
   });
 }
 
-/** A preset, resolved by the SDK; its refusal said as a configuration error. */
+/**
+ * A preset, resolved by the SDK; its refusal said as a configuration error.
+ * The SDK's presets are `arc-mainnet` and `arc-testnet` (`NETWORKS`), and the
+ * refusal names them so a typo is answered with the two real choices.
+ */
 function resolvePreset(network: string): NetworkConfig {
   try {
-    return resolveNetwork(network as "arc-testnet");
+    return resolveNetwork(network as Network);
   } catch (cause) {
     throw new ConfigError(
       `${network} is not a network the SDK can build a client for: ${describeSdkError(cause)} `
-      + "Use a preset the SDK knows, or describe the deployment in ARCNOW_MCP_NETWORK_FILE.",
+      + `The presets are ${NETWORKS.join(" and ")}; use one of them, or describe the deployment `
+      + "in ARCNOW_MCP_NETWORK_FILE.",
       { cause },
     );
   }
@@ -631,6 +636,9 @@ export function startupBanner(config: ServerConfig): string {
     lines.push(
       "  reminder    a launch is irreversible and a token's parameters can never be changed.",
     );
+    if (config.network === "arc-mainnet") {
+      lines.push("  reminder    this is Arc MAINNET: every write here spends real money.");
+    }
   } else {
     lines.push(
       "  to write    restart with --allow-writes and a key in ARCNOW_PRIVATE_KEY. The key is "

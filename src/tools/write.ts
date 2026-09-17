@@ -44,6 +44,7 @@
 
 import type { Address, Hash } from "viem";
 import type {
+  PoolFees,
   QuoteAmount,
   Tokens as TokensType,
   TradeBuyQuote,
@@ -67,7 +68,10 @@ import {
 
 import {
   addr,
+  bpsPercent,
   effectivePrice,
+  hookFeeRate,
+  lpFee,
   money,
   note,
   price,
@@ -94,9 +98,8 @@ import {
 import type { AnyTool, ToolContext, ToolOutput } from "./schema.js";
 import { renderError, renderPoolError } from "./errors.js";
 import { launchParams } from "./launch-params.js";
-import { lpFee } from "./pool.js";
 import { chooseQuote, parseQuoteAmount } from "./quote.js";
-import { GRADUATING_BUY_WARNING, quoteArg } from "./read.js";
+import { GRADUATING_BUY_WARNING, launchFeeLine, quoteArg } from "./read.js";
 import { refuseIfOverBudget, refuseWithoutCap } from "./spend.js";
 import { resolveCurve } from "./resolve.js";
 import type { Market } from "./venue.js";
@@ -124,15 +127,33 @@ function deadlineArg() {
     + "on a curve or in a pool alike.");
 }
 
-/** arcnow.io's 1% as a pool trade's receipt records it, including a trade too small to charge. */
-function poolFeeTaken(fee: QuoteAmount): string {
+/**
+ * The hook's fee as a pool trade's receipt records it, including a trade too
+ * small to charge. The rate is the pool's own, read from the hook; with none
+ * readable the amount is still the receipt's.
+ */
+function poolFeeTaken(fee: QuoteAmount, fees: PoolFees | undefined): string {
+  const rate = fees === undefined ? "its share" : `its ${bpsPercent(fees.hookFeeBps)}`;
   if (fee.isZero()) {
-    return "none — this trade was too small for arcnow.io's fee hook to charge: its 1% floors "
-      + "to zero, and the receipt carries no fee log";
+    return `none — this trade was too small for arcnow.io's fee hook to charge: ${rate} of it `
+      + "floors to zero, and the receipt carries no fee log";
   }
-  return `${money(fee)} — the 1% arcnow.io's fee hook took, from its own HookFeeTaken log in the `
-    + "receipt; accrued by the hook as a PoolManager claim, and paid out to the fee recipients "
-    + "at the start of a later swap";
+  return `${money(fee)} — what arcnow.io's fee hook took${fees === undefined
+    ? ""
+    : `, at ${hookFeeRate(fees)}`}; from its own HookFeeTaken log in the receipt, accrued by `
+    + "the hook as a PoolManager claim, and paid out to the creator, the platform and the "
+    + "protocol at the start of a later swap";
+}
+
+/** The "pool fee" row of a pool result: the LP fee read from the pool, or that it could not be. */
+function poolLpFeeRow(
+  fees: PoolFees | undefined,
+  taken: "inside the price" | "from the tokens sold",
+): string {
+  if (fees === undefined) return "(the pool's fees could not be read back)";
+  return `${lpFee(fees.lpFeePips)} — Uniswap's LP fee, ${taken}, kept by the pool's liquidity; `
+    + `with the hook's ${bpsPercent(fees.hookFeeBps)}, ${bpsPercent(fees.totalBps)} of the trade `
+    + "in all, both read off the pool";
 }
 
 /**
@@ -239,9 +260,10 @@ const launch = defineTool({
     + "that can fix a typo in the symbol. A token launched with the wrong name is wrong "
     + "forever and the only remedy is to launch another one and spend the fee again.\n\n"
     + "THE QUOTE is permanent too: `quote` (native USDC by default, or an ERC-20 such as EURC, by "
-    + "symbol or address) prices the token for life. What it costs: a flat launch fee plus "
-    + "whatever initial buy you specify, both in that quote, and the initial buy pays the "
-    + "ordinary 1% trade fee on top — there is no fee-free entry into a curve. Native USDC is "
+    + "symbol or address) prices the token for life. What it costs: whatever initial buy you "
+    + "specify, in that quote, plus the launch fee the quote registry sets for it — zero on "
+    + "arcnow.io's networks, launching is free, but read live — and the initial buy pays the "
+    + "ordinary 1% trade fee — there is no fee-free entry into a curve. Native USDC is "
     + "sent as the exact msg.value; an ERC-20 is pulled by the launchpad, after an approve of "
     + "exactly the total, sent only when the allowance falls short and reported.\n\n"
     + "SPEND CAPS ARE PER QUOTE: the total is checked against the operator's cap for that quote "
@@ -260,7 +282,7 @@ const launch = defineTool({
       + "and means launching without taking a position."),
     quote: quoteArg(),
     slippageBps: slippageArg(),
-    maxTotalCost: maxCostArg("the whole launch — launch fee plus initial buy"),
+    maxTotalCost: maxCostArg("the whole launch — the initial buy plus any launch fee"),
     acknowledgeIrreversible: z.literal(true).describe(
       "Must be true. By setting it you assert that the user has been shown the total cost "
       + "and the permanent parameters — name, symbol, supply, curve, graduation venue — and "
@@ -320,8 +342,9 @@ const launch = defineTool({
           ["total", `${money(quote.totalCost)} — exactly, ${token.isNative
             ? "sent as msg.value, as the launchpad requires"
             : "pulled by the launchpad; the launch transaction carried no value"}`],
-          ["  launch fee", money(quote.launchFee)],
-          ["  of which fee", `${money(quote.tradeFee)} on the initial buy`],
+          ["  launch fee", launchFeeLine(quote.launchFee)],
+          ["  of which fee", `${money(quote.tradeFee)} on the initial buy — the 1% trade fee, split `
+          + "four ways between creator, platform, referrer and protocol"],
           ["quote", `${quoteLine(token)} — this token is priced in it for life`],
           ["tokens received", qty(result.tokensOut, args.symbol)],
           ["floor you set", `${qty(minTokensOut, args.symbol)} (${args.slippageBps} bps)`],
@@ -398,7 +421,6 @@ interface BuyArgs {
   maxTotalCost: string;
   deadlineMinutes: number;
   referrer?: string | undefined;
-  developer?: string | undefined;
   gasLimit?: number | undefined;
   recipient?: string | undefined;
 }
@@ -429,11 +451,12 @@ const buy = defineTool({
     + "The result says whether the pool was actually created in this transaction, which is a "
     + "different question from whether the curve graduated.\n\n"
     + "IN A POOL (the token graduated and migrated): the buy goes through arcnow.io's v4 "
-    + "router. arcnow.io's 1% is taken in the quote by its fee hook and the pool charges its own "
-    + "LP fee on top; the result reports both. gasLimit, referrer and developer are "
-    + "curve-only and are REFUSED here rather than ignored — a pool swap has no referrer or "
-    + "developer and cannot graduate anything. recipient is pool-only: it sends the tokens "
-    + "to another address, and is refused on a curve.\n\n"
+    + "router. arcnow.io's fee hook takes 0.80% of the trade in the quote and the pool keeps "
+    + "its own 0.20% LP fee — 1.00% in all, the same as the curve — and the result reports "
+    + "both, read off the pool. gasLimit and referrer are curve-only and are REFUSED here "
+    + "rather than ignored — a pool swap has no referrer and cannot graduate anything. "
+    + "recipient is pool-only: it sends the tokens to another address, and is refused on a "
+    + "curve.\n\n"
     + "A token that graduated but never migrated has no market at all; this refuses and names "
     + "arcnow_migrate. A buy is not irreversible the way a launch is — the tokens can be sold "
     + "back, at whatever the price is then.",
@@ -447,11 +470,9 @@ const buy = defineTool({
     maxTotalCost: maxCostArg("this buy"),
     deadlineMinutes: deadlineArg(),
     referrer: addressArg(
-      "CURVE ONLY: credited with the referral share of the fee. Refused for a token in its "
-      + "pool: a pool swap has no referrer, and that share goes to the platform.").optional(),
-    developer: addressArg(
-      "CURVE ONLY: credited with the developer share of the fee. Refused for a token in its "
-      + "pool, for the same reason.").optional(),
+      "CURVE ONLY: credited with the referral share of the fee — one of its four parties, with "
+      + "creator, platform and protocol; there is no developer share. Refused for a token in "
+      + "its pool: a pool swap has no referrer.").optional(),
     gasLimit: z.number().int().min(100_000).max(30_000_000).optional().describe(
       "CURVE ONLY. Optional override for the gas limit. Leave it out: this server already "
       + "sends 8,000,000 on a curve buy it can see will graduate and lets the node estimate "
@@ -472,7 +493,7 @@ const buy = defineTool({
     if (market.venue === "stranded") return { isError: true, text: strandedText("arcnow_buy") };
 
     if (market.venue === "pool") {
-      const refused = (["gasLimit", "referrer", "developer"] as const)
+      const refused = (["gasLimit", "referrer"] as const)
         .filter((field) => args[field] !== undefined);
       if (refused.length > 0) {
         return { isError: true, text: refuseCurveOnly("arcnow_buy", refused, "sent") };
@@ -541,7 +562,6 @@ async function buyOnCurve(
     minTokensOut,
     deadline: Deadline.inMinutes(args.deadlineMinutes),
     ...(args.referrer === undefined ? {} : { referrer: args.referrer as Address }),
-    ...(args.developer === undefined ? {} : { developer: args.developer as Address }),
     ...(gasLimit === undefined ? {} : { gasLimit }),
   });
   if (result.venue !== "curve") {
@@ -555,7 +575,9 @@ async function buyOnCurve(
       section("what happened", [
         ["venue", "its bonding curve"],
         ["you sent", spentLine(quoteIn, `the curve ${addr(market.curve.address)}`)],
-        ["fee", `${money(result.fee)} — the flat 1%`],
+        ["fee", `${money(result.fee)} — the flat 1%, split four ways between the creator, the `
+        + `platform, ${args.referrer === undefined ? "the referrer's share to the platform" : "the referrer"} `
+        + "and the protocol"],
         ["reached the curve", money(result.quoteSpent)],
         ["refunded", result.refund.isZero()
           ? "nothing"
@@ -633,7 +655,7 @@ async function buyInPool(
     return { isError: true, text: sentElsewhere("arcnow_buy", "curve", result.txHash) };
   }
 
-  const key = await market.trade.pool.key().catch(() => undefined);
+  const fees = await market.trade.pool.fees().catch(() => undefined);
   const avg = effectivePrice(result.quote, result.tokens);
   const router = routerName(ctx.port.config);
   return {
@@ -645,11 +667,9 @@ async function buyInPool(
         + `transaction's receipt, arcnow.io's fee included${quoteIn.token.isNative
           ? "; as msg.value"
           : "; pulled by the router, with no value sent"}`],
-        ["arcnow.io fee", poolFeeTaken(result.feeQuote)],
+        ["arcnow.io fee", poolFeeTaken(result.feeQuote, fees)],
         ["earlier fees paid out", earlierFeesPaidOut(result.feesDistributed)],
-        ["pool fee", key === undefined
-          ? "(the pool key could not be read back)"
-          : `${lpFee(key.fee)} — Uniswap's LP fee, inside the price`],
+        ["pool fee", poolLpFeeRow(fees, "inside the price")],
         ["tokens out", `${qty(result.tokens, symbol)} — from the token's Transfer log in the `
         + "receipt"],
         ["tokens to", recipient === undefined ? "the signing address" : payee(recipient, signer)],
@@ -670,7 +690,6 @@ interface SellArgs {
   slippageBps: number;
   deadlineMinutes: number;
   referrer?: string | undefined;
-  developer?: string | undefined;
   recipient?: string | undefined;
   approveRouter?: boolean | undefined;
 }
@@ -699,8 +718,9 @@ const sell = defineTool({
     + "— never an unlimited allowance — and only if the existing allowance does not already "
     + "cover the sale; the result reports the approval, its transaction and the allowance "
     + "left, including when the sell that followed it failed. Tell the user about the "
-    + "approval before setting approveRouter. referrer and developer are curve-only and "
-    + "refused in a pool; recipient is pool-only and refused on a curve.\n\n"
+    + "approval before setting approveRouter. referrer is curve-only and refused in a pool; "
+    + "recipient is pool-only and refused on a curve. In a pool the fee hook takes 0.80% of "
+    + "the payout and the pool its 0.20% LP fee, 1.00% in all; the result reports both.\n\n"
     + "A token that graduated but never migrated cannot be sold anywhere; this refuses and "
     + "names arcnow_migrate.",
   input: {
@@ -710,10 +730,7 @@ const sell = defineTool({
     deadlineMinutes: deadlineArg(),
     referrer: addressArg(
       "CURVE ONLY: credited with the referral share of the fee. Refused for a token in its "
-      + "pool.").optional(),
-    developer: addressArg(
-      "CURVE ONLY: credited with the developer share of the fee. Refused for a token in its "
-      + "pool.").optional(),
+      + "pool. There is no developer share and no developer argument.").optional(),
     recipient: addressArg(
       "POOL ONLY: who receives the proceeds, in the token's quote. Defaults to the signing "
       + "address. Refused for a token still on its bonding curve, which always pays the seller. If "
@@ -732,7 +749,7 @@ const sell = defineTool({
     if (market.venue === "stranded") return { isError: true, text: strandedText("arcnow_sell") };
 
     if (market.venue === "pool") {
-      const refused = (["referrer", "developer"] as const)
+      const refused = (["referrer"] as const)
         .filter((field) => args[field] !== undefined);
       if (refused.length > 0) {
         return { isError: true, text: refuseCurveOnly("arcnow_sell", refused, "sent") };
@@ -767,7 +784,6 @@ async function sellOnCurve(
     minQuoteOut,
     deadline: Deadline.inMinutes(args.deadlineMinutes),
     ...(args.referrer === undefined ? {} : { referrer: args.referrer as Address }),
-    ...(args.developer === undefined ? {} : { developer: args.developer as Address }),
   });
   if (result.venue !== "curve") {
     return { isError: true, text: sentElsewhere("arcnow_sell", "pool", result.hash) };
@@ -779,7 +795,8 @@ async function sellOnCurve(
       section("what happened", [
         ["venue", "its bonding curve"],
         ["tokens in", qty(tokensIn, symbol)],
-        ["fee", money(result.fee)],
+        ["fee", `${money(result.fee)} — the flat 1%, split four ways between creator, platform, `
+        + "referrer and protocol"],
         ["you received", result.quoteOut.token.isNative
           ? money(result.quoteOut)
           : `${money(paidOut(result.quoteOut))} — ${result.quoteOut.token.symbol} pays whole raw units, `
@@ -912,7 +929,7 @@ async function sellInPool(
 
   const left = await pool.routerAllowance(signer).catch(() => undefined);
   const recipient = (args.recipient ?? signer) as Address;
-  const key = await pool.key().catch(() => undefined);
+  const fees = await pool.fees().catch(() => undefined);
 
   return {
     text: report(
@@ -933,10 +950,8 @@ async function sellInPool(
         ["venue", `Uniswap v4 pool, through arcnow.io's router ${router}`],
         ["tokens in", `${qty(result.tokens, symbol)} — from the token's Transfer log in the `
         + "receipt"],
-        ["pool fee", key === undefined
-          ? "(the pool key could not be read back)"
-          : `${lpFee(key.fee)} — Uniswap's LP fee, taken from the tokens sold`],
-        ["arcnow.io fee", poolFeeTaken(result.feeQuote)],
+        ["pool fee", poolLpFeeRow(fees, "from the tokens sold")],
+        ["arcnow.io fee", poolFeeTaken(result.feeQuote, fees)],
         ["earlier fees paid out", earlierFeesPaidOut(result.feesDistributed)],
         ["you received", `${money(result.quote)} — read from the PoolManager's Swap log in this `
         + "transaction's receipt, net of both fees"],
@@ -1093,15 +1108,19 @@ const registerPlatform = defineTool({
     + "a token, they do NOT need a platform — they launch under arcnow.io's, which is the "
     + "default.\n\n"
     + "The shares you give are basis points OF THE FEE, not of the trade: 3000 means 30% of "
-    + "the 1% fee, which is 0.30% of a trade. The platform's own share is not an input and "
-    + "cannot be one — it is the residual, 10000 minus the protocol's maximum share and the "
-    + "three you set, and this tool tells you what you are actually choosing before it sends. "
-    + "Creator, referrer and developer may claim at most 7500 between them.\n\n"
-    + "The curve template is arcnow.io's shipped constant-product one, whose constants were "
-    + "solved to 80 "
-    + "digits and placed rather than rounded. This tool does not accept a custom template: a "
-    + "recomputed Y0 or R0 lands a few wei out, the contracts' own validator refuses it, and "
-    + "the failure reads like a bug in the contracts rather than in the arithmetic.",
+    + "the 1% fee, which is 0.30% of a trade. The fee has FOUR parties — creator, referrer, "
+    + "platform, protocol; there is no developer share. The platform's own share is not an "
+    + "input and cannot be one — it is the residual, 10000 minus the protocol's maximum share "
+    + "and the two you set, and this tool tells you what you are actually choosing before it "
+    + "sends. Creator and referrer may claim at most 7500 between them; arcnow.io's own "
+    + "platform is 3000 / 1000, leaving it 3500.\n\n"
+    + "The curve template is the one arcnow.io's own platform serves on this network — the "
+    + "reference template (1,000,000,000 supply, 50,000 to graduate) on arc-mainnet, the "
+    + "testnet template (1,000,000 supply, 50 to graduate) on arc-testnet — whose constants were "
+    + "solved to 80 digits and placed rather than rounded. This tool does not accept a custom "
+    + "template: a recomputed Y0 or R0 lands a few wei out, the contracts' own validator "
+    + "refuses it, and the failure reads like a bug in the contracts rather than in the "
+    + "arithmetic.",
   input: {
     admin: addressArg("The address that will administer the new platform."),
     feeRecipient: addressArg("Where the platform's residual share of every fee is paid."),
@@ -1110,10 +1129,7 @@ const registerPlatform = defineTool({
       + "— 30% of the fee, 0.30% of a trade."),
     refShareBps: intArg(0, 7500, 1000,
       "The referrer's share, in basis points of the fee. Paid to the platform when a trade "
-      + "names no referrer."),
-    devShareBps: intArg(0, 7500, 1000,
-      "The developer's share, in basis points of the fee. Paid to the platform when a trade "
-      + "names no developer."),
+      + "names no referrer. There is no developer share to set."),
     defaultMigrator: addressArg(
       "The graduation venue every token launched under this platform gets by default. It is "
       + "snapshotted into each curve at launch and immutable from then on. Use a migrator "
@@ -1125,17 +1141,15 @@ const registerPlatform = defineTool({
       feeRecipient: args.feeRecipient as Address,
       creatorShareBps: Bps.of(BigInt(args.creatorShareBps)),
       refShareBps: Bps.of(BigInt(args.refShareBps)),
-      devShareBps: Bps.of(BigInt(args.devShareBps)),
       defaultMigrator: args.defaultMigrator as Address,
-      curve: CurveTemplate.arcnowDefaults(),
+      curve: platformTemplateFor(ctx),
     };
 
     // The SDK checks the 7500 allowance client-side and names the residual you
     // are actually choosing. Letting it reject here costs nothing and produces
     // a better sentence than a revert would.
     const { platformShare } = validateNewPlatform(newPlatform);
-    const residual = platformShareBps(
-      newPlatform.creatorShareBps, newPlatform.refShareBps, newPlatform.devShareBps);
+    const residual = platformShareBps(newPlatform.creatorShareBps, newPlatform.refShareBps);
 
     const result = await ctx.port.platforms.registerPlatform(newPlatform);
     return {
@@ -1144,8 +1158,8 @@ const registerPlatform = defineTool({
         section("the split it will apply", [
           ["creator", share(newPlatform.creatorShareBps, TRADE_FEE)],
           ["referrer", share(newPlatform.refShareBps, TRADE_FEE)],
-          ["developer", share(newPlatform.devShareBps, TRADE_FEE)],
           ["platform (residual)", share(residual, TRADE_FEE)],
+          ["developer", "none — the fee has four parties: creator, referrer, platform, protocol"],
           ["as registered", `${result.platformShareBps.bps} bps (the registry's own figure; `
           + `this SDK computed ${platformShare.bps} before sending)`],
         ]),
@@ -1154,7 +1168,7 @@ const registerPlatform = defineTool({
           ["fee recipient", addr(newPlatform.feeRecipient)],
           ["graduation venue", `${addr(newPlatform.defaultMigrator)} — `
           + venueOf(newPlatform.defaultMigrator, ctx.port.config)],
-          ["curve template", "arcnow.io's shipped template, CurveTemplate.arcnowDefaults(): "
+          ["curve template", `the template arcnow.io's own platform serves on ${ctx.port.config.name}: `
           + `${qty(newPlatform.curve.totalSupply)} supply, ${qty(newPlatform.curve.curveSupply)} on `
           + `the curve, graduating at ${money(newPlatform.curve.target)}`],
           ["transaction", result.txHash],
@@ -1165,6 +1179,16 @@ const registerPlatform = defineTool({
     };
   },
 });
+
+/**
+ * The curve template arcnow.io's own platform serves on this network: the SDK's
+ * snapshot for the preset — the reference template on `arc-mainnet`, the
+ * testnet template on `arc-testnet` — or, for a network the SDK has no
+ * snapshot of, `arcnowDefaults()`.
+ */
+function platformTemplateFor(ctx: ToolContext) {
+  return CurveTemplate.referenceFor(ctx.port.config.name) ?? CurveTemplate.arcnowDefaults();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 

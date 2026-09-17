@@ -75,8 +75,9 @@ export function instructionsFor(config: ServerConfig): string {
     "GRADUATION. A curve retires permanently once it collects its target, and the buy that "
     + "fills it migrates the curve into a Uniswap v4 pool in that same transaction. From then "
     + "on the token trades in that pool, through arcnow.io's router, and the quote and trade "
-    + "tools route there on their own — every pool quote says it is one, and names the pool's "
-    + "own LP fee on top of arcnow.io's 1%. Where a token graduates to is snapshotted into its "
+    + "tools route there on their own — every pool quote says it is one, and names its two "
+    + "charges apart: arcnow.io's fee hook's 0.80% and the pool's own 0.20% LP fee, 1.00% in all, "
+    + "the same as the curve's flat 1%. Where a token graduates to is snapshotted into its "
     + "own curve at launch: ask the curve, not a network-wide list. A token can be graduated "
     + "and NOT migrated — trading over, no market anywhere — until somebody runs the "
     + "permissionless migrate().",
@@ -86,9 +87,40 @@ export function instructionsFor(config: ServerConfig): string {
     + "true), only for exactly the amount being sold, and reports it. Tell the user about the "
     + "approval before you set that flag.",
     "",
-    "There is no arcnow.io mainnet. If someone asks for one, say so; do not substitute an "
-    + "address from anywhere.",
+    "FEES. On a curve the trade fee is a flat 1%, split FOUR ways — creator, platform, "
+    + "referrer, protocol; there is no developer share, and no tool takes a developer. A "
+    + "referrer is a curve-only argument; a pool swap has none. Launching is free on "
+    + "arcnow.io's networks: the launch fee the quote registry reports is zero, and the tools "
+    + "print what it reports rather than assuming.",
+    "",
+    networkNote(config),
   ].join("\n");
+}
+
+/**
+ * Which network this is, said so that a model never substitutes the other one.
+ * arcnow.io is live on Arc mainnet (`arc-mainnet`, chain 5042) and on Arc
+ * testnet (`arc-testnet`, chain 5042002); the two run the same contracts at
+ * different addresses, and a token address from one means nothing on the other.
+ */
+function networkNote(config: ServerConfig): string {
+  switch (config.network) {
+    case "arc-mainnet":
+      return "THIS IS ARC MAINNET. Every amount here is real money and every write spends it. "
+        + "Nothing on Arc testnet — no token, no curve, no address — exists here; do not carry "
+        + "one over. If someone wants to rehearse, the operator runs a second server with "
+        + "ARCNOW_MCP_NETWORK=arc-testnet.";
+    case "arc-testnet":
+      return "This is ARC TESTNET, the rehearsal network: the same contracts as arcnow.io on Arc "
+        + "mainnet, at other addresses, with test funds. Nothing bought, sold or launched here "
+        + "exists on mainnet, and no mainnet token or address can be reached from here. The live "
+        + "network is arc-mainnet, which the operator selects with ARCNOW_MCP_NETWORK.";
+    default:
+      return `This server is pointed at ${config.network}, a deployment its operator described `
+        + "rather than an arcnow.io preset. Nothing here says which of Arc mainnet or Arc testnet "
+        + "it is, or whether it is either; do not assume, and do not carry an address over from "
+        + "another network.";
+  }
 }
 
 export function createServer(port: ArcNowPort, config: ServerConfig): Server {

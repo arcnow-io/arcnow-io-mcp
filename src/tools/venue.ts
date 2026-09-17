@@ -20,8 +20,8 @@
  * # Parameters that do not apply are refused, never dropped
  *
  * The two venues take different arguments. A curve pays `msg.sender` and has
- * no recipient; a pool swap has no referrer or developer and cannot graduate
- * anything, so a gas limit guards nothing there. The SDK refuses each of these
+ * no recipient; a pool swap has no referrer and cannot graduate anything, so a
+ * gas limit guards nothing there. The SDK refuses each of these
  * on the wrong venue, and so does this server — earlier, before anything is
  * quoted or sent, and in words that say why. A parameter silently ignored is a
  * referrer promised a share the chain never saw, or a payout sent to an address
@@ -91,7 +91,7 @@ export function strandedText(tool: string): string {
   );
 }
 
-/** Refuse `referrer`, `developer` or `gasLimit` on a token that trades in its pool. */
+/** Refuse `referrer` or `gasLimit` on a token that trades in its pool. */
 export function refuseCurveOnly(
   tool: string,
   fields: readonly string[],
@@ -104,10 +104,11 @@ export function refuseCurveOnly(
     + "this token has graduated — it trades in its Uniswap v4 pool, through arcnow.io's "
     + `router. Nothing was ${nothing}.`,
     note(
-      "A pool swap has no argument for a referrer or a developer: arcnow.io's fee hook pays "
-      + "those two shares of its 1% to the platform recipient, deliberately, because a hook "
-      + "that took them from the trade would let any trader name themselves the referrer and "
-      + "skim the share. And gasLimit guards a bonding curve's graduation, which a pool buy "
+      "A pool swap has no argument for a referrer: arcnow.io's fee hook splits its 0.80% between "
+      + "the creator, the platform and the protocol, with no referral share at all — "
+      + "deliberately, because a hook that took one from the trade would let any trader name "
+      + "themselves the referrer and skim it. And gasLimit guards a bonding curve's graduation, "
+      + "which a pool buy "
       + `cannot trigger. ${list} ${one ? "is" : "are"} refused rather than ignored, so that `
       + "nobody is told a share was credited, or a limit was set, that the chain was never "
       + `asked for. Call ${tool} again without ${one ? "it" : "them"}.`,

@@ -153,14 +153,14 @@ describe("arcnow_quote_sell", () => {
 });
 
 describe("arcnow_quote_launch", () => {
-  it("separates the flat fee from the initial buy and its own trade fee", async () => {
+  it("separates the launch fee — zero, launching is free — from the initial buy and its own trade fee", async () => {
     const { ctx } = ctxReadOnly();
     const result = await callTool("arcnow_quote_launch",
       { name: "Example", symbol: "EXAM", metadataUri: "ipfs://example", initialBuy: "25" }, ctx);
-    expect(result.text).toMatch(/total, exactly\s+27 USDC/);
-    expect(result.text).toMatch(/launch fee\s+2 USDC/);
+    expect(result.text).toMatch(/total, exactly\s+25 USDC/);
+    expect(result.text).toMatch(/launch fee\s+0 USDC launch fee — launching is free — as the quote registry sets it for USDC now/);
     expect(result.text).toMatch(/initial buy\s+25 USDC/);
-    expect(result.text).toMatch(/of which fee\s+0\.25 USDC/);
+    expect(result.text).toMatch(/of which fee\s+0\.25 USDC — the initial buy's own 1%, split four ways/);
   });
 
   it("says overpaying reverts, because the launchpad has no refund path", async () => {

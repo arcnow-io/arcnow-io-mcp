@@ -1,6 +1,6 @@
 {
   "name": "@arcnow/mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "An MCP server for arcnow.io on Arc: read the curves, quote a trade, and — only when the operator opts in — launch, buy and sell.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -30,7 +30,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@arcnow/sdk": "0.1.3",
+    "@arcnow/sdk": "0.2.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "viem": "^2.56.3",
     "zod": "^4.6.2"

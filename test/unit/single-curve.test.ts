@@ -2,11 +2,12 @@
  * One curve, one stack.
  *
  * arcnow.io runs one bonding curve — the constant-product
- * `arcnow/bonding-curve@3.x.x` — launched through one contract stack. Nothing a
- * tool prints names a curve kind or a stack, and the parameters it prints are
- * that curve's own, `r0Wad` and `y0Wad`. Any other version — the retired linear
- * curve `@1.x.x`, a platform or a fee hook of another version — is refused by
- * name before any quote or send, and never priced.
+ * `arcnow/bonding-curve@4.x.x` of the fee-model stack — launched through one
+ * contract stack. Nothing a tool prints names a curve kind or a stack, and the
+ * parameters it prints are that curve's own, `r0Wad` and `y0Wad`. Any other
+ * version — the retired multi-quote `@3.x.x`, the linear curve `@1.x.x`, a
+ * platform or a fee hook of another version — is refused by name before any
+ * quote or send, and never priced.
  */
 
 import type { Address } from "viem";
@@ -103,7 +104,7 @@ describe("a CPMM token's reports name no curve kind and no stack", () => {
     const registered = await callTool("arcnow_register_platform", {
       admin: TOKEN, feeRecipient: TOKEN, defaultMigrator: NETWORK.contracts.v4Migrator,
     }, ctx);
-    expect(registered.text).toMatch(/curve template\s+arcnow\.io's shipped template/);
+    expect(registered.text).toMatch(/curve template\s+the template arcnow\.io's own platform serves on arc-testnet/);
     for (const result of [
       network,
       await callTool("arcnow_list_tokens", { limit: 5 }, ctx),
@@ -120,7 +121,7 @@ describe("a CPMM token's reports name no curve kind and no stack", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("a retired or unknown version is refused by name, before any quote or send", () => {
-  it("arcnow_token on an @1 curve: UnknownCurveVersion naming the version, not 'not ours', not a price", async () => {
+  it("arcnow_token on a retired curve: UnknownCurveVersion naming the version, not 'not ours', not a price", async () => {
     // As on a chain: the address is a curve, so reading it as a token fails.
     const { ctx } = ctxReadOnly({ ...RETIRED_CURVE, tokenCurveThrows: new Error("execution reverted") });
     const result = await callTool("arcnow_token", { address: CURVE }, ctx);
@@ -128,7 +129,8 @@ describe("a retired or unknown version is refused by name, before any quote or s
     expect(result.text).toMatch(/^arcnow_token refused: UnknownCurveVersion — this curve answers VERSION\(\)/);
     expect(result.text).toContain(RETIRED_CURVE_VERSION);
     expect(flat(result.text)).toMatch(/Nothing was quoted and nothing was sent/);
-    expect(flat(result.text)).toMatch(/the retired linear curve, @1\.x\.x, included/);
+    expect(flat(result.text)).toMatch(/the retired multi-quote stack, @3\.x\.x/);
+    expect(flat(result.text)).toMatch(/the retired linear curve, @1\.x\.x/);
     expect(flat(result.text)).not.toMatch(/failed on-chain|does not answer as an arcnow\.io|spot price/);
   });
 
@@ -240,7 +242,7 @@ describe("the pool's fee hook, which accrues", () => {
     const { ctx } = ctxReadOnly({ ...MIGRATED, accruedHookFee: "0.25" });
     const result = await callTool("arcnow_token", { address: TOKEN }, ctx);
     expect(result.text).toMatch(/hook fees accrued\s+0\.25 USDC/);
-    expect(flat(result.text)).toMatch(/fee hook accrues arcnow\.io's 1% as a PoolManager claim/);
+    expect(flat(result.text)).toMatch(/takes its 0\.8% in USDC, accrues it as a PoolManager claim/);
   });
 
   it("a pool buy reports the earlier fees its swap paid out, apart from the fill", async () => {
@@ -256,7 +258,8 @@ describe("the pool's fee hook, which accrues", () => {
     await callTool("arcnow_buy", buyArgs(), ctx);
     const result = await callTool("arcnow_sell", sellArgs({ approveRouter: true }), ctx);
     expect(result.isError, result.text).toBeUndefined();
-    expect(result.text).toMatch(/earlier fees paid out\s+0\.01 USDC/);
+    // The buy's hook fee: 0.80% of its 1 USDC, not 1%.
+    expect(result.text).toMatch(/earlier fees paid out\s+0\.008 USDC/);
   });
 });
 
@@ -279,10 +282,10 @@ describe("the launch scan", () => {
     const client = {
       config: NETWORK,
       publicClient: {
-        getBlockNumber: () => Promise.resolve(62_238_000n),
+        getBlockNumber: () => Promise.resolve(62_398_000n),
         getLogs: (params: { address: unknown; fromBlock: bigint; toBlock: bigint }) => {
           queried.push(params);
-          return Promise.resolve([log(launchpad, 62_230_000n, TOKEN)].filter((l) =>
+          return Promise.resolve([log(launchpad, 62_390_000n, TOKEN)].filter((l) =>
             String(params.address).toLowerCase() === l.address
             && l.blockNumber >= params.fromBlock && l.blockNumber <= params.toBlock));
         },
@@ -292,10 +295,11 @@ describe("the launch scan", () => {
     const port = createSdkPort(client, { chunkBlocks: 50_000n, maxChunks: 10 });
     const scan = await port.listLaunches({ limit: 10 });
 
-    expect(NETWORK.deployedAtBlock).toBe(62_226_550);
-    expect(scan.launches.map((l) => l.blockNumber)).toEqual([62_230_000n]);
+    // The fee-model stack's first block on Arc testnet, as the SDK's preset records it.
+    expect(NETWORK.deployedAtBlock).toBe(62_386_232);
+    expect(scan.launches.map((l) => l.blockNumber)).toEqual([62_390_000n]);
     expect(scan.reachedDeployment).toBe(true);
-    expect(scan.scannedFromBlock).toBe(62_226_550n);
+    expect(scan.scannedFromBlock).toBe(62_386_232n);
     expect(queried.length).toBeGreaterThan(0);
     for (const q of queried) expect(String(q.address).toLowerCase()).toBe(launchpad);
   });

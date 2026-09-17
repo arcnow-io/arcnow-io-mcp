@@ -207,19 +207,23 @@ describe("a native transfer that failed inside a pool, explained once", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("the reads the tools make of the fee hook", () => {
-  it("a pool buy and a pool sell ask the hook nothing: fill and payout come from the receipt", async () => {
+  it("a pool buy and a pool sell ask the hook only its rates: fill and payout come from the receipt", async () => {
     const { ctx, port } = ctxWithWrites(MIGRATED);
     const bought = await callTool("arcnow_buy", buyArgs(), ctx);
     const sold = await callTool("arcnow_sell", sellArgs({ approveRouter: true }), ctx);
     expect(bought.isError, bought.text).toBeUndefined();
     expect(sold.isError, sold.text).toBeUndefined();
-    expect(sold.text).toMatch(/earlier fees paid out\s+0\.01 USDC/);
+    // The buy's 0.80% of 1 USDC, paid out by the sell — from the receipt, not the hook.
+    expect(sold.text).toMatch(/earlier fees paid out\s+0\.008 USDC/);
     expect(whats(port)).not.toContain("read:pool.accruedHookFee");
+    // The rates each report prints are read off the pool, once per trade.
+    expect(whats(port).filter((w) => w === "read:pool.fees")).toHaveLength(2);
   });
 
-  it("arcnow_token asks the hook once, for its accrual", async () => {
+  it("arcnow_token asks the hook once for its accrual and once for its rates", async () => {
     const { ctx, port } = ctxReadOnly(MIGRATED);
     await callTool("arcnow_token", { address: TOKEN }, ctx);
     expect(whats(port).filter((w) => w === "read:pool.accruedHookFee")).toHaveLength(1);
+    expect(whats(port).filter((w) => w === "read:pool.fees")).toHaveLength(1);
   });
 });

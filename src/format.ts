@@ -27,7 +27,16 @@
 
 import type { Address } from "viem";
 import { getAddress } from "viem";
-import type { Bps, CurveParams, NetworkConfig, QuoteTokenInfo, Tokens } from "@arcnow/sdk";
+import type {
+  Bps,
+  CurveParams,
+  FeeConfig,
+  FeeSplit,
+  NetworkConfig,
+  PoolFees,
+  QuoteTokenInfo,
+  Tokens,
+} from "@arcnow/sdk";
 import { QuoteAmount, WAD } from "@arcnow/sdk";
 
 /** The zero address, which on Arc is a real account, not a null. */
@@ -78,6 +87,105 @@ export function addr(value: string): string {
 export function share(bps: Bps, tradeFeeBps: Bps): string {
   return `${bps.bps} bps of the fee (${bps.percentOfFee()}% of the fee, `
     + `${bps.percentOfTrade(tradeFeeBps)}% of a trade)`;
+}
+
+// ── fees ───────────────────────────────────────────────────────────────────
+//
+// Two venues, two fee shapes, and every report says which it is showing.
+//
+// On a CURVE the trade fee is a flat 1% of the trade, split FOUR ways — creator,
+// platform, referrer, protocol — on the split the token's platform configured.
+// There is no developer share: the earlier stack carried one that nothing used,
+// and it fell to the platform. A share whose address is zero at swap time (no
+// referrer named) is paid to the platform as well.
+//
+// In a POOL the trade costs the same 1.00% in all, but as two charges by two
+// parties: arcnow.io's fee hook takes 0.80% of the trade in the pool's quote and
+// splits it creator / platform / protocol (a pool swap names no referrer), and
+// the pool itself keeps a 0.20% LP fee inside its price, which is Uniswap's and
+// not arcnow.io's. Every pool figure here is the SDK's `Pool.fees()`, read off
+// the hook and the pool key — never a constant of this server.
+
+/** `0.8%` — a rate in basis points OF THE TRADE, as a percentage of the trade. */
+export function bpsPercent(bps: Bps): string {
+  return `${Number(bps.bps) / 100}%`;
+}
+
+/**
+ * A v4 LP fee, in hundredths of a bip (pips), said both ways:
+ * `0.2% (2000 hundredths of a bip)`.
+ */
+export function lpFee(pips: number): string {
+  return `${pips / 10_000}% (${pips} hundredths of a bip)`;
+}
+
+/**
+ * What a pool trade costs, in one line, from `Pool.fees()`:
+ * `1% of the trade in all — 0.8% (80 bps) taken by arcnow.io's fee hook in EURC,
+ * plus 0.2% (2000 hundredths of a bip) the pool keeps as its LP fee; the same
+ * 1% the curve charged`.
+ */
+export function poolFeesLine(fees: PoolFees, quote: QuoteTokenInfo): string {
+  return `${bpsPercent(fees.totalBps)} of the trade in all — ${bpsPercent(fees.hookFeeBps)} `
+    + `(${fees.hookFeeBps.bps} bps) taken by arcnow.io's fee hook in ${quote.symbol}, plus `
+    + `${lpFee(fees.lpFeePips)} the pool keeps as its LP fee, inside its price. Both read off `
+    + "the chain: the hook's own feeBps() and the pool key's fee";
+}
+
+/** The hook's rate, said for a row: `0.8% of the trade (80 bps), read from the hook`. */
+export function hookFeeRate(fees: PoolFees): string {
+  return `${bpsPercent(fees.hookFeeBps)} of the trade (${fees.hookFeeBps.bps} bps), read from the hook`;
+}
+
+/**
+ * Where a curve fee goes: the four parties, each with its amount and the address
+ * that receives it. An absent referrer is said to go to the platform, because it
+ * does.
+ */
+export function curveFeeSplitSection(
+  fee: QuoteAmount,
+  split: FeeSplit,
+  referrer: string | undefined,
+): string {
+  return section(`fee split — where the ${money(fee)} goes, four ways`, [
+    ["creator", `${money(split.creatorAmount)}  → ${addr(split.creator)}`],
+    ["platform", `${money(split.platformAmount)}  → ${addr(split.platform)} — the residual share, `
+    + "plus any share nobody was named for, plus the rounding dust"],
+    ["referrer", referrer === undefined
+      ? `${money(split.refAmount)}  → no referrer given, so this goes to the platform`
+      : `${money(split.refAmount)}  → ${addr(split.ref)}`],
+    ["protocol", `${money(split.protocolAmount)}  → ${addr(split.protocol)}`],
+    ["developer", "none — the fee has four parties; there is no developer share"],
+  ]);
+}
+
+/**
+ * How a pool's hook splits its 0.80%: three parties, read off the hook. A pool
+ * swap names no referrer, so its share is stated as zero rather than omitted.
+ */
+export function poolFeeSplitSection(fees: PoolFees): string {
+  const { split } = fees;
+  const hook = fees.hookFeeBps;
+  return section(`how the fee hook splits its ${bpsPercent(hook)} — read from the hook`, [
+    ["creator", share(split.creatorShareBps, hook)],
+    ["platform", `${share(split.platformShareBps, hook)}  → ${addr(split.platformRecipient)}`],
+    ["protocol", `${share(split.protocolShareBps, hook)}  → ${addr(split.protocolRecipient)}`],
+    ["referrer", `${split.refShareBps.bps} bps — a pool swap names no referrer, so there is no `
+    + "referral share here; the LP fee is the pool's own and is not split by anyone"],
+  ]);
+}
+
+/** A platform's four-way curve split, one row per party, every share both ways. */
+export function curveSplitRows(config: FeeConfig, tradeFee: Bps): [string, string][] {
+  return [
+    ["creator", share(config.creatorShareBps, tradeFee)],
+    ["referrer", `${share(config.refShareBps, tradeFee)} — paid to the platform when a trade `
+    + "names no referrer"],
+    ["protocol", `${share(config.protocolShareBps, tradeFee)} — protocol-controlled; no platform `
+    + "sets it"],
+    ["platform", `${share(config.platformShareBps, tradeFee)} — the RESIDUAL: 10000 minus the `
+    + "three above, never an input anywhere in the contracts"],
+  ];
 }
 
 /** Graduation progress. `progressBps` is out of 10,000, not out of 100. */
@@ -132,7 +240,7 @@ export function venueOf(migrator: Address, config: NetworkConfig): string {
 
 /**
  * A curve's immutable parameters. arcnow.io has one curve, the constant-product
- * `arcnow/bonding-curve@3.x.x`, and the SDK prices no other: `r0Wad` is its
+ * `arcnow/bonding-curve@4.x.x`, and the SDK prices no other: `r0Wad` is its
  * virtual quote reserve at launch, in 18-decimal WAD of its quote token, and
  * `y0Wad` its virtual token reserve at launch.
  */

@@ -72,13 +72,35 @@ describe("arcnow_quote_buy on a migrated token", () => {
     expect(whats(port)).not.toContain("read:quoteBuy");
   });
 
-  it("breaks out arcnow.io's 1% and the pool's own LP fee as two separate charges", async () => {
+  it("breaks out the hook's 0.80% and the pool's own 0.20% LP fee as two separate charges, 1% in all", async () => {
+    const { ctx, port } = ctxReadOnly(MIGRATED);
+    const result = await callTool("arcnow_quote_buy", { address: TOKEN, quoteIn: "1" }, ctx);
+    expect(result.text).toMatch(/fees in all\s+1% of the trade in all — 0\.8% \(80 bps\) taken by arcnow\.io's fee hook in USDC, plus 0\.2% \(2000 hundredths of a bip\) the pool keeps as its LP fee/);
+    expect(result.text).toMatch(/arcnow\.io fee\s+0\.008 USDC — 0\.8% of the trade \(80 bps\), read from the hook/);
+    expect(result.text).toMatch(/pool fee\s+0\.2% \(2000 hundredths of a bip\)/);
+    expect(flat(result.text)).toMatch(/liquidity/i);
+    // Nothing here says 1% is the hook's: the curve's 1% is never a pool figure.
+    expect(result.text).not.toMatch(/arcnow\.io fee\s+0\.01 USDC/);
+    // The rates came off the pool, through the SDK's Pool.fees(), not from a constant.
+    expect(whats(port)).toContain("read:pool.fees");
+  });
+
+  it("reads the rates it prints off the pool: another LP fee in the key is reported as it is", async () => {
+    const { ctx } = ctxReadOnly({ ...MIGRATED, poolFee: 3000 });
+    const result = await callTool("arcnow_quote_buy", { address: TOKEN, quoteIn: "1" }, ctx);
+    expect(result.text).toMatch(/pool fee\s+0\.3% \(3000 hundredths of a bip\)/);
+    expect(result.text).toMatch(/fees in all\s+1\.1% of the trade in all — 0\.8% \(80 bps\)/);
+  });
+
+  it("shows how the hook splits its 0.80% — creator, platform, protocol — and that a pool has no referrer share", async () => {
     const { ctx } = ctxReadOnly(MIGRATED);
     const result = await callTool("arcnow_quote_buy", { address: TOKEN, quoteIn: "1" }, ctx);
-    expect(result.text).toMatch(/arcnow\.io fee\s+0\.01 USDC/);
-    expect(result.text).toMatch(/pool fee\s+0\.3%/);
-    expect(flat(result.text)).toMatch(/3000 hundredths of a bip/);
-    expect(flat(result.text)).toMatch(/liquidity/i);
+    expect(result.text).toMatch(/how the fee hook splits its 0\.8% — read from the hook/);
+    expect(result.text).toMatch(/creator\s+5000 bps of the fee \(50% of the fee, 0\.4% of a trade\)/);
+    expect(result.text).toMatch(/platform\s+1875 bps of the fee \(18\.75% of the fee, 0\.15% of a trade\)/);
+    expect(result.text).toMatch(/protocol\s+3125 bps of the fee \(31\.25% of the fee, 0\.25% of a trade\)/);
+    expect(result.text).toMatch(/referrer\s+0 bps — a pool swap names no referrer/);
+    expect(result.text).not.toMatch(/developer/);
   });
 
   it("puts the average fill price next to the pool's spot price, with the price impact", async () => {
@@ -105,19 +127,25 @@ describe("arcnow_quote_buy on a migrated token", () => {
     expect(lower(result.text)).toContain(lower(ROUTER));
   });
 
-  it.each(["referrer", "developer"])(
-    "refuses a %s rather than ignoring it, because a pool swap has none",
-    async (field) => {
-      const { ctx, port } = ctxReadOnly(MIGRATED);
-      const result = await callTool("arcnow_quote_buy",
-        { address: TOKEN, quoteIn: "1", [field]: PAYEE }, ctx);
-      expect(result.isError).toBe(true);
-      expect(result.text).toContain(field);
-      expect(flat(result.text)).toMatch(/curve-only/);
-      expect(flat(result.text)).toMatch(/refused rather than ignored/i);
-      expect(whats(port)).not.toContain("read:pool.quoteBuy");
-    },
-  );
+  it("refuses a referrer rather than ignoring it, because a pool swap has none", async () => {
+    const { ctx, port } = ctxReadOnly(MIGRATED);
+    const result = await callTool("arcnow_quote_buy",
+      { address: TOKEN, quoteIn: "1", referrer: PAYEE }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("referrer");
+    expect(flat(result.text)).toMatch(/curve-only/);
+    expect(flat(result.text)).toMatch(/refused rather than ignored/i);
+    expect(whats(port)).not.toContain("read:pool.quoteBuy");
+  });
+
+  it("has no developer argument anywhere: the fee has four parties, and a strict schema refuses one", async () => {
+    const { ctx, port } = ctxReadOnly(MIGRATED);
+    const result = await callTool("arcnow_quote_buy",
+      { address: TOKEN, quoteIn: "1", developer: PAYEE }, ctx);
+    expect(result.isError).toBe(true);
+    expect(flat(result.text)).toMatch(/developer/);
+    expect(whats(port)).not.toContain("read:pool.quoteBuy");
+  });
 });
 
 describe("arcnow_quote_sell on a migrated token", () => {
@@ -137,8 +165,9 @@ describe("arcnow_quote_sell on a migrated token", () => {
     expect(result.isError, result.text).toBeUndefined();
     expect(flat(result.text)).toMatch(/not a bonding-curve quote/i);
     expect(result.text).toMatch(/you receive\s+0\.\d+ USDC/);
-    expect(result.text).toMatch(/arcnow\.io fee\s+0\.00\d+ USDC/);
-    expect(result.text).toMatch(/pool fee\s+0\.3%/);
+    expect(result.text).toMatch(/arcnow\.io fee\s+0\.00\d+ USDC — 0\.8% of the trade \(80 bps\), read from the hook/);
+    expect(result.text).toMatch(/pool fee\s+0\.2% \(2000 hundredths of a bip\)/);
+    expect(result.text).toMatch(/fees in all\s+1% of the trade in all/);
     expect(result.text).toMatch(/price impact\s+-1\.5/);
     expect(port.calls.find((c) => c.what === "read:pool.quoteSell")?.args)
       .toMatchObject({ from: PAYEE });
@@ -193,7 +222,8 @@ describe("arcnow_token reports where a token trades", () => {
     expect(result.text).toMatch(/venue\s+its Uniswap v4 pool/);
     expect(result.text).toMatch(/reachable\s+yes/);
     expect(lower(result.text)).toContain(lower(ROUTER));
-    expect(result.text).toMatch(/pool fee\s+0\.3%/);
+    expect(result.text).toMatch(/fees\s+1% of the trade in all — 0\.8% \(80 bps\) taken by arcnow\.io's fee hook in USDC, plus 0\.2% \(2000 hundredths of a bip\)/);
+    expect(result.text).toMatch(/how the fee hook splits its 0\.8%/);
   });
 
   it("names the PoolManager as a manager, never as the token's pool address", async () => {
@@ -276,7 +306,6 @@ describe("arcnow_buy on a migrated token", () => {
   it.each([
     ["gasLimit", 8_000_000],
     ["referrer", PAYEE],
-    ["developer", PAYEE],
   ] as const)("refuses %s, a curve-only parameter, and sends nothing", async (field, value) => {
     const { ctx, port } = ctxWithWrites(MIGRATED);
     const result = await callTool("arcnow_buy", buyArgs({ [field]: value }), ctx);
@@ -293,8 +322,9 @@ describe("arcnow_buy on a migrated token", () => {
     const quote = await port.trade(TOKEN).quoteBuy(Usdc.parse("1"));
     expect(result.text).toMatch(/venue\s+Uniswap v4 pool/);
     expect(result.text).toContain(`${quote.tokensOut.toString()} EXAM`);
-    expect(result.text).toMatch(/arcnow\.io fee\s+0\.01 USDC/);
-    expect(result.text).toMatch(/pool fee\s+0\.3%/);
+    expect(result.text).toMatch(/arcnow\.io fee\s+0\.008 USDC — what arcnow\.io's fee hook took, at 0\.8% of the trade \(80 bps\)/);
+    expect(result.text).toMatch(/pool fee\s+0\.2% \(2000 hundredths of a bip\) — Uniswap's LP fee, inside the price/);
+    expect(flat(result.text)).toMatch(/1% of the trade in all, both read off the pool/);
     expect(result.text).toContain(POOL_TX);
     expect(result.text).toMatch(/tokens to\s+0x3333333333333333333333333333333333333333 \(the signing address\)/);
   });
@@ -419,11 +449,18 @@ describe("arcnow_sell on a migrated token: the router approval", () => {
     expect(result.text).toMatch(/NOT the signing address/);
   });
 
-  it.each(["referrer", "developer"])("refuses a %s and sends nothing, approval included", async (field) => {
+  it("refuses a referrer and sends nothing, approval included", async () => {
     const { ctx, port } = ctxWithWrites(MIGRATED);
-    const result = await callTool("arcnow_sell", sellArgs({ approveRouter: true, [field]: PAYEE }), ctx);
+    const result = await callTool("arcnow_sell", sellArgs({ approveRouter: true, referrer: PAYEE }), ctx);
     expect(result.isError).toBe(true);
     expect(flat(result.text)).toMatch(/curve-only/);
+    expect(port.writes).toEqual([]);
+  });
+
+  it("a developer is not an argument at all, and sends nothing, approval included", async () => {
+    const { ctx, port } = ctxWithWrites(MIGRATED);
+    const result = await callTool("arcnow_sell", sellArgs({ approveRouter: true, developer: PAYEE }), ctx);
+    expect(result.isError).toBe(true);
     expect(port.writes).toEqual([]);
   });
 });
@@ -433,13 +470,22 @@ describe("the schemas say which parameters apply where", () => {
     (findTool(tool)?.inputSchema as { properties?: Record<string, Record<string, unknown>> })
       .properties?.[field];
 
-  it("marks gasLimit, referrer and developer curve-only and recipient pool-only", () => {
-    for (const field of ["gasLimit", "referrer", "developer"]) {
+  it("marks gasLimit and referrer curve-only and recipient pool-only", () => {
+    for (const field of ["gasLimit", "referrer"]) {
       expect(String(property("arcnow_buy", field)?.description)).toMatch(/^CURVE ONLY/);
     }
     expect(String(property("arcnow_buy", "recipient")?.description)).toMatch(/^POOL ONLY/);
     expect(String(property("arcnow_sell", "recipient")?.description)).toMatch(/^POOL ONLY/);
     expect(String(property("arcnow_sell", "approveRouter")?.description)).toMatch(/^POOL ONLY/);
+  });
+
+  it("publishes no developer argument on any tool: the fee has four parties", () => {
+    for (const tool of ["arcnow_quote_buy", "arcnow_quote_sell", "arcnow_buy", "arcnow_sell", "arcnow_register_platform"]) {
+      const schema = findTool(tool)?.inputSchema as { properties?: Record<string, unknown> };
+      for (const field of Object.keys(schema.properties ?? {})) {
+        expect(field, `${tool}.${field}`).not.toMatch(/dev/i);
+      }
+    }
   });
 
   it("does not require or default approveRouter", () => {

@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
-import { NETWORKS, resolveNetwork } from "@arcnow/sdk";
+import { NETWORKS, POOL_LP_FEE_PIPS, resolveNetwork } from "@arcnow/sdk";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const pins = JSON.parse(readFileSync(`${root}/pins.json`, "utf8")) as {
@@ -89,22 +89,67 @@ describe("package.json", () => {
   });
 });
 
-describe("the deployment the SDK ships", () => {
-  it("has a Uniswap v4 venue and no escrow, v2 or v3 — which is the healthy state", () => {
+describe("the deployments the SDK ships", () => {
+  it("ships exactly the two presets: arc-testnet and arc-mainnet", () => {
+    expect([...NETWORKS].sort()).toEqual(["arc-mainnet", "arc-testnet"]);
+  });
+
+  it.each(["arc-testnet", "arc-mainnet"] as const)(
+    "%s has a Uniswap v4 venue and no escrow, v2 or v3 — which is the healthy state",
+    (network) => {
+      const config = resolveNetwork(network);
+      expect(config.venues.uniswapV4).toBe(true);
+      expect(config.venues.escrow).toBe(false);
+      expect(config.venues.uniswapV2).toBe(false);
+      expect(config.venues.uniswapV3).toBe(false);
+      expect(config.contracts.escrowMigrator).toBeUndefined();
+    },
+  );
+
+  it.each(["arc-testnet", "arc-mainnet"] as const)(
+    "%s names a v4 router and a PoolManager, which is what makes a graduated token tradeable",
+    (network) => {
+      const config = resolveNetwork(network);
+      expect(config.contracts.v4Router).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(config.v4?.poolManager).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(config.v4?.lpFee).toBe(POOL_LP_FEE_PIPS);
+    },
+  );
+
+  it.each(["arc-testnet", "arc-mainnet"] as const)(
+    "%s runs the fee-model stack: bonding-curve@4, platform-config@4, arc-now-fee-hook@4",
+    (network) => {
+      const versions = resolveNetwork(network).contractVersions;
+      expect(versions?.curveFactory).toMatch(/^arcnow\/curve-factory@4\./);
+      expect(versions?.arcnowPlatform).toMatch(/^arcnow\/platform-config@4\./);
+      expect(versions?.platformRegistry).toMatch(/^arcnow\/platform-registry@4\./);
+      expect(versions?.feeHook).toMatch(/^arcnow\/arc-now-fee-hook@4\./);
+      expect(versions?.launchpad).toMatch(/^arcnow\/launchpad@3\./);
+    },
+  );
+
+  it("arc-testnet is the fee-model stack deployed at block 62,386,232", () => {
     const config = resolveNetwork("arc-testnet");
-    expect(config.venues.uniswapV4).toBe(true);
-    expect(config.venues.escrow).toBe(false);
-    expect(config.venues.uniswapV2).toBe(false);
-    expect(config.venues.uniswapV3).toBe(false);
-    expect(config.contracts.escrowMigrator).toBeUndefined();
+    expect(config.chainId).toBe(5042002);
+    expect(config.contracts.launchpad.toLowerCase()).toBe("0x675a7a605911b0e3109eca580bc86e708199d952");
+    expect(config.deployedAtBlock).toBe(62_386_232);
+    expect(config.quoteTokens.find((q) => q.symbol === "EURC")?.address)
+      .toBe("0x89b50855aa3be2f677cd6303cec089b5f319d72a");
   });
 
-  it("names arcnow.io's v4 router, which is what makes a graduated token tradeable", () => {
-    expect(resolveNetwork("arc-testnet").contracts.v4Router?.toLowerCase())
-      .toBe("0x139166ee61bb560ff34f05ae4a2b666ad98b9b2e");
-  });
-
-  it("refuses arc-mainnet rather than inventing an address for it", () => {
-    expect(() => resolveNetwork("arc-mainnet")).toThrow();
+  it("arc-mainnet is the live deployment: chain 5042, and EURC at its mainnet address", () => {
+    const config = resolveNetwork("arc-mainnet");
+    expect(config.chainId).toBe(5042);
+    expect(config.rpcUrl).toBe("https://rpc.mainnet.arc.io");
+    expect(config.contracts.launchpad.toLowerCase()).toBe("0xae1e5558ab71e851ce44f5c0f12ebeaf3db9dae3");
+    expect(config.contracts.arcnowPlatform.toLowerCase()).toBe("0xe3c7cd3e98af47de518740c7cfef9fc7064b2ef9");
+    expect(config.v4?.poolManager?.toLowerCase()).toMatch(/^0x8366a39c/);
+    expect(config.contracts.v4Router?.toLowerCase()).toMatch(/^0x4a142209/);
+    expect(config.deployedAtBlock).toBe(21_179_866);
+    const eurc = config.quoteTokens.find((q) => q.symbol === "EURC");
+    expect(eurc?.address).toBe("0xbef5f6d51cb62b58e6a8f77868681825c6fe21c1");
+    expect(eurc?.decimals).toBe(6);
+    expect(eurc?.isNative).toBe(false);
+    expect(config.quoteTokens.find((q) => q.isNative)?.symbol).toBe("USDC");
   });
 });

@@ -169,10 +169,10 @@ describe("an EURC cap", () => {
     expect(port.writes).toEqual([]);
   });
 
-  it("allows a EURC launch whose total — launch fee plus initial buy — is exactly the cap", async () => {
+  it("allows a EURC launch whose total — the initial buy, launching being free — is exactly the cap", async () => {
     const { ctx, port } = ctxWithWrites({}, EURC_50);
     const result = await callTool("arcnow_launch",
-      launchArgs({ quote: "EURC", initialBuy: "48", maxTotalCost: "50" }), ctx);
+      launchArgs({ quote: "EURC", initialBuy: "50", maxTotalCost: "50" }), ctx);
     expect(result.isError, result.text).toBeUndefined();
     expect(port.writes.map((w) => w.what)).toEqual(["write:quote.approve", "write:launch"]);
     expect(port.writes[0]?.args).toMatchObject({ amount: "50", spender: NETWORK.contracts.launchpad });
@@ -181,7 +181,7 @@ describe("an EURC cap", () => {
   it("refuses a EURC launch whose total is above it", async () => {
     const { ctx, port } = ctxWithWrites({}, EURC_50);
     const result = await callTool("arcnow_launch",
-      launchArgs({ quote: "EURC", initialBuy: "48.000001", maxTotalCost: "1000" }), ctx);
+      launchArgs({ quote: "EURC", initialBuy: "50.000001", maxTotalCost: "1000" }), ctx);
     expect(result.isError).toBe(true);
     expect(result.text).toMatch(/50\.000001 EURC/);
     expect(result.text).toMatch(/operator capped/);

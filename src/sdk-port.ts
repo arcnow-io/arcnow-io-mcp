@@ -56,6 +56,7 @@ import {
   type NewPlatform,
   type PlatformSettings,
   type PoolBuyQuote,
+  type PoolFees,
   type PoolKeyStruct,
   QuoteAmount,
   type QuoteFrom,
@@ -105,17 +106,26 @@ export interface PoolHandle {
   approveRouter(amount: Tokens): Promise<`0x${string}`>;
   /**
    * What the pool's fee hook has charged and not yet paid out, in the pool's quote.
-   * `UnknownHookVersion` for a hook that is not `arcnow/arc-now-fee-hook@3.x.x`.
+   * `UnknownHookVersion` for a hook that is not `arcnow/arc-now-fee-hook@4.x.x`.
    */
   accruedHookFee(): Promise<QuoteAmount>;
+  /**
+   * What a trade in this pool costs, **read off the chain**: the hook's 0.80%
+   * (`feeBps()`), the pool's 0.20% LP fee (the key's `fee`, in hundredths of a
+   * bip), their total in bps of the trade — 100, the same as the curve charged —
+   * and how the hook splits its part (creator / platform / protocol; a pool has
+   * no referrer share). Every fee figure a pool report prints comes from this,
+   * never from a constant here.
+   */
+  fees(): Promise<PoolFees>;
 }
 
 /**
  * `client.trade(token)`: a token traded wherever it currently trades.
  *
  * The write tools send every buy and sell through this, curve or pool, so the
- * SDK's own refusals — a `recipient` on a curve, a `referrer`, `developer` or
- * `gasLimit` on a pool — stand behind this server's.
+ * SDK's own refusals — a `recipient` on a curve, a `referrer` or `gasLimit` on
+ * a pool — stand behind this server's.
  */
 export interface TradeHandle {
   readonly token: Address;
@@ -178,7 +188,11 @@ export interface CurveHandle {
   state(): Promise<CurveState>;
   quoteBuy(quoteIn: QuoteAmount): Promise<BuyQuote>;
   quoteSell(tokensIn: Tokens): Promise<SellQuote>;
-  previewFeeSplit(fee: QuoteAmount, referrer?: Address, developer?: Address): Promise<FeeSplit>;
+  /**
+   * The four amounts and addresses a curve fee resolves to: creator, platform,
+   * referrer, protocol.
+   */
+  previewFeeSplit(fee: QuoteAmount, referrer?: Address): Promise<FeeSplit>;
   feeConfig(): Promise<FeeConfig>;
   pendingWithdrawal(account: Address): Promise<QuoteAmount>;
   buy(request: BuyRequest): Promise<BuyResult>;
@@ -202,7 +216,11 @@ export interface TokenHandle {
 
 export interface LaunchpadHandle {
   readonly address: Address;
-  /** The flat launch fee in `quote` (native USDC when omitted), from the quote registry. */
+  /**
+   * The launch fee in `quote` (native USDC when omitted), read from the quote
+   * registry. Zero for every quote arcnow.io registers — launching is free — but
+   * read, never assumed.
+   */
   launchFee(quote?: Address): Promise<QuoteAmount>;
   quoteLaunch(params: LaunchParams): Promise<LaunchQuote>;
   predictAddresses(creator: Address, params: LaunchParams): Promise<{

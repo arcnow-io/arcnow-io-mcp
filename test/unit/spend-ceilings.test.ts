@@ -44,11 +44,11 @@ describe("the caller's stated ceiling", () => {
   it("stops a launch whose quoted total is above the stated ceiling", async () => {
     const { ctx, port } = ctxWithWrites();
     const result = await callTool("arcnow_launch", {
-      name: "Example", symbol: "EXAM", metadataUri: "ipfs://example", initialBuy: "25", slippageBps: 50,
+      name: "Example", symbol: "EXAM", metadataUri: "ipfs://example", initialBuy: "27", slippageBps: 50,
       maxTotalCost: "26", acknowledgeIrreversible: true,
     }, ctx);
 
-    // The fixture quotes 27: two flat plus a twenty-five initial buy.
+    // The fixture quotes 27: the initial buy, launching being free.
     expect(result.isError).toBe(true);
     expect(result.text).toContain("27 USDC");
     expect(result.text).toContain("26 USDC");

@@ -9,7 +9,9 @@
  *   - read-only is what you get unless somebody asked for otherwise;
  *   - asking for writes without a key stops the server rather than downgrading
  *     it silently;
- *   - arc-mainnet is refused by name rather than resolved to invented addresses.
+ *   - both presets resolve through the SDK — arc-mainnet to the live deployment,
+ *     arc-testnet to the rehearsal — and a name the SDK does not know is
+ *     refused naming both.
  */
 
 import { describe, expect, it } from "vitest";
@@ -113,14 +115,54 @@ describe("the key", () => {
 });
 
 describe("network", () => {
-  it("refuses arc-mainnet by name", () => {
-    expect(() => loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnet" }))
-      .toThrow(/arc-mainnet does not exist/);
-    expect(() => loadConfig({}, ["--network=arc-mainnet"])).toThrow(ConfigError);
+  it("defaults to arc-testnet: nobody is pointed at real money by omission", () => {
+    const config = loadConfig({});
+    expect(config.network).toBe("arc-testnet");
+    expect(config.networkConfig.chainId).toBe(5042002);
   });
 
-  it("defaults to arc-testnet", () => {
-    expect(loadConfig({}).network).toBe("arc-testnet");
+  it("resolves arc-mainnet to the live deployment, from the environment or the flag", () => {
+    for (const config of [
+      loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnet" }),
+      loadConfig({}, ["--network=arc-mainnet"]),
+    ]) {
+      expect(config.network).toBe("arc-mainnet");
+      expect(config.networkConfig.chainId).toBe(5042);
+      expect(config.networkConfig.rpcUrl).toBe("https://rpc.mainnet.arc.io");
+      expect(config.networkConfig.contracts.launchpad.toLowerCase())
+        .toBe("0xae1e5558ab71e851ce44f5c0f12ebeaf3db9dae3");
+      expect(config.networkConfig.contracts.arcnowPlatform.toLowerCase())
+        .toBe("0xe3c7cd3e98af47de518740c7cfef9fc7064b2ef9");
+      expect(config.networkConfig.quoteTokens.map((q) => q.symbol)).toEqual(["USDC", "EURC"]);
+    }
+  });
+
+  it("refuses a preset the SDK does not know, naming the two it does", () => {
+    expect(() => loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnett" })).toThrow(ConfigError);
+    expect(() => loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnett" }))
+      .toThrow(/arc-testnet and arc-mainnet/);
+  });
+
+  it("caps mainnet's quotes per quote: EURC at its mainnet address, native USDC by default", () => {
+    const config = loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnet", ARCNOW_MCP_MAX_SPEND_EURC: "50" });
+    const eurc = config.networkConfig.quoteTokens.find((q) => q.symbol === "EURC");
+    expect(eurc?.address).toBe("0xbef5f6d51cb62b58e6a8f77868681825c6fe21c1");
+    expect(eurc?.decimals).toBe(6);
+    expect(config.spendCapFor(eurc!)?.cap?.format()).toBe("50 EURC");
+    expect(config.spendCapFor(eurc!)?.cap?.token.address).toBe("0xbef5f6d51cb62b58e6a8f77868681825c6fe21c1");
+    expect(config.maxSpendPerCallUsdc.format()).toBe("100 USDC");
+    expect(config.describe().maxSpendPerCall).toEqual({ USDC: "100", EURC: "50" });
+    // Without a cap, mainnet EURC is refused like any other uncapped quote.
+    expect(loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnet" }).spendCapFor(eurc!)?.cap).toBeUndefined();
+  });
+
+  it("the banner on a writing mainnet server says it is real money", () => {
+    const banner = startupBanner(
+      loadConfig({ ARCNOW_MCP_NETWORK: "arc-mainnet", ARCNOW_PRIVATE_KEY: TEST_KEY }, ["--allow-writes"]));
+    expect(banner).toMatch(/network\s+arc-mainnet/);
+    expect(banner).toMatch(/Arc MAINNET: every write here spends real money/);
+    const testnet = startupBanner(loadConfig({ ARCNOW_PRIVATE_KEY: TEST_KEY }, ["--allow-writes"]));
+    expect(testnet).not.toMatch(/real money/);
   });
 });
 

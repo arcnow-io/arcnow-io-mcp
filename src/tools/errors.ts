@@ -213,13 +213,14 @@ function unknownCurveVersion(tool: string, error: ArcNowError): string {
     + `${JSON.stringify(version)}, which is not a version this server prices.`,
     error.message,
     note("Nothing was quoted and nothing was sent. arcnow.io has one bonding curve, the "
-      + "constant-product arcnow/bonding-curve@3.x.x, priced in a quote token and launched under "
-      + "arcnow/platform-config@3.x.x platforms through arcnow/launchpad@3.x.x, whose quote "
-      + "registry is arcnow/quote-registry@1.x.x. Any other version — the 2.x contracts Arc "
-      + "testnet ran until the multi-quote reset and the retired linear curve, @1.x.x, included "
-      + "— is refused rather "
-      + "than priced, because another build can keep another quantity in the same slots and a "
-      + "guess would be a plausible, wrong number. Do not estimate a price for it some other way."),
+      + "constant-product arcnow/bonding-curve@4.x.x — the fee-model stack, live on Arc mainnet "
+      + "and Arc testnet — priced in a quote token and launched under "
+      + "arcnow/platform-config@4.x.x platforms through arcnow/launchpad@3.x.x, whose quote "
+      + "registry is arcnow/quote-registry@1.x.x. Any other version — the retired multi-quote "
+      + "stack, @3.x.x, whose data was wiped; the 2.x contracts before it; the retired linear "
+      + "curve, @1.x.x — is refused rather than priced, because another build can keep another "
+      + "quantity in the same slots and a guess would be a plausible, wrong number. Do not "
+      + "estimate a price for it some other way."),
   );
 }
 

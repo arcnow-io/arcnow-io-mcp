@@ -11,6 +11,60 @@ the first one below, is kept as written.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-17
+
+The server now runs on arcnow.io's live contract stack, on Arc mainnet as well as
+Arc testnet, through `@arcnow/sdk` 0.2.0. The fee model it reports changed shape,
+which is why this is a minor release under 0.x semantics rather than a patch.
+
+### Added
+- **Arc mainnet.** `ARCNOW_MCP_NETWORK=arc-mainnet` starts the server on the live
+  network (chain 5042, `https://rpc.mainnet.arc.io`), reading every address from
+  the SDK's preset: the launchpad, arcnow.io's platform, the Uniswap v4 router and
+  PoolManager, and native USDC and EURC (`0xbEf5f6d5…`) as quote tokens. Spend caps
+  work per quote there as everywhere: `ARCNOW_MCP_MAX_SPEND_EURC` caps mainnet's
+  EURC by its mainnet address, and a quote with no cap is refused. The startup
+  banner and the session instructions say, in as many words, that every write on
+  mainnet is real money; the testnet server says it is the rehearsal. The default
+  stays `arc-testnet`, so nobody is pointed at real money by omission.
+- **The pool's fees, read off the pool.** Every pool report — `arcnow_token`,
+  `arcnow_quote_buy`, `arcnow_quote_sell`, `arcnow_buy` and `arcnow_sell` in a
+  pool — shows the two charges apart and their total: arcnow.io's fee hook's
+  0.80% of the trade, taken in the pool's quote, plus the pool's own 0.20% LP fee,
+  1.00% in all, the same as the curve. Both rates, and the hook's split of its
+  part (creator 5000 / platform 1875 / protocol 3125 bps; a pool swap has no
+  referrer), come from the SDK's `Pool.fees()`, which reads the hook and the pool
+  key. The server holds no fee constant: a pool whose key carries another LP fee
+  is reported at the fee it carries.
+- `arcnow_register_platform` seeds a new platform with the template arcnow.io's
+  own platform serves on the current network: the reference template
+  (1,000,000,000 supply, 50,000 to graduate) on mainnet, the testnet template
+  (1,000,000 / 50) on testnet.
+
+### Changed
+- **The fee has four parties.** A curve's 1% is split between the creator, the
+  platform, the referrer and the protocol — arcnow.io's own split is 3000 / 3500 /
+  1000 / 2500 bps of the fee — and every fee breakdown, `arcnow_platform` and
+  `arcnow_list_platforms` print those four. There is no developer share: the
+  `developer` argument is gone from `arcnow_quote_buy`, `arcnow_quote_sell`,
+  `arcnow_buy` and `arcnow_sell`, and `devShareBps` from
+  `arcnow_register_platform`. Every schema is strict, so passing one is refused
+  by name rather than ignored.
+- **Launching is free.** The quote registry's launch fee is zero for every quote
+  on both networks. The tools keep reading it from the registry and print the
+  figure they read — `0 USDC launch fee — launching is free` — so a launch's
+  total is exactly its initial buy.
+- **The SDK pin** moves from `@arcnow/sdk` 0.1.3 to 0.2.0, whose version gates
+  accept the live `bonding-curve@4.x` stack and refuse the retired multi-quote
+  `@3.x` contracts by name, as they refuse `@2.x` and `@1.x`. A fee hook of a
+  refused version has neither its accrual nor its rates read.
+- The README describes both networks, with the client examples on `arc-mainnet`
+  and the writes-enabled example kept on `arc-testnet` as the rehearsal.
+
+### Removed
+- The refusal of `arc-mainnet` at startup, and the instruction that there was no
+  arcnow.io mainnet. There is.
+
 ## [0.1.2] - 2026-09-17
 
 ### Changed

@@ -15,10 +15,13 @@
  */
 
 import type { Address } from "viem";
-import type { FeeSplit, QuoteRegistryEntry, QuoteTokenInfo } from "@arcnow/sdk";
+import type { QuoteRegistryEntry, QuoteTokenInfo } from "@arcnow/sdk";
 import {
   Bps,
   isArcNowError,
+  POOL_LP_FEE_PIPS,
+  POOL_TOTAL_FEE_BPS,
+  POOL_TRADE_FEE_BPS,
   QuoteAmount,
   TRADE_FEE_BPS,
   Tokens,
@@ -26,10 +29,16 @@ import {
 
 import {
   addr,
+  bpsPercent,
+  curveFeeSplitSection,
   curveParamsLine,
+  curveSplitRows,
   effectivePrice,
+  lpFee,
   money,
   note,
+  poolFeeSplitSection,
+  poolFeesLine,
   price,
   priceMove,
   progress,
@@ -45,13 +54,15 @@ import { renderError } from "./errors.js";
 import { addressArg, boolArg, decimalArg, defineTool, intArg, metadataUriArg, textArg, z } from "./schema.js";
 import type { AnyTool, ToolContext } from "./schema.js";
 import { launchParams } from "./launch-params.js";
-import { buyPaymentLine, lpFee, quotePoolBuy, quotePoolSell } from "./pool.js";
+import { buyPaymentLine, quotePoolBuy, quotePoolSell } from "./pool.js";
 import { chooseQuote, parseQuoteAmount } from "./quote.js";
 import { capText } from "./spend.js";
 import type { Market } from "./venue.js";
 import { configuredRouter, resolveMarket, strandedText } from "./venue.js";
 
 const TRADE_FEE = Bps.of(TRADE_FEE_BPS);
+/** The shipped pool rates, for prose about the network — a pool's own are read from it. */
+const POOL_HOOK_FEE = Bps.of(POOL_TRADE_FEE_BPS);
 
 /** The tolerances a quote is shown at, so a floor is a choice and not a guess. */
 const TOLERANCES = [50n, 100n, 300n, 1000n];
@@ -135,8 +146,15 @@ const network = defineTool({
             : `${addr(config.usdcErc20)}, 6 decimals — the SAME asset through an ERC-20 `
               + "interface. It does not pay for gas and no arcnow.io contract touches it. "
               + "The two raw integers differ by 1e12."],
-          ["trade fee", `${TRADE_FEE.bps} bps — a flat 1% on every buy and sell, in the token's `
-          + "quote, not a platform's to change. What a platform configures is how that 1% is divided."],
+          ["trade fee, on a curve", `${TRADE_FEE.bps} bps — a flat ${bpsPercent(TRADE_FEE)} on every `
+          + "buy and sell, in the token's quote, not a platform's to change. What a platform "
+          + "configures is how it is divided, FOUR ways: creator, referrer, platform, protocol. "
+          + "There is no developer share."],
+          ["trade fee, in a pool", `the same ${bpsPercent(Bps.of(POOL_TOTAL_FEE_BPS))} `
+          + `in all, as two charges: arcnow.io's fee hook takes ${bpsPercent(POOL_HOOK_FEE)} `
+          + `(${POOL_HOOK_FEE.bps} bps) of the trade in the pool's quote, split creator / platform / `
+          + `protocol with no referrer, and the pool keeps ${lpFee(POOL_LP_FEE_PIPS)} as its LP fee. `
+          + "Every pool quote reads both rates off that pool rather than assuming these."],
         ]),
         section("quote tokens — what a token can be priced in, for life", [
           ...config.quoteTokens.map((token) => [
@@ -231,8 +249,8 @@ const listTokens = defineTool({
         ["platform", addr(launch.platform)],
         ["graduates to", `${addr(launch.migrator)} — ${venueOf(launch.migrator, ctx.port.config)}`],
         ["quote", quoteLine(launch.quoteToken)],
-        ["at launch", `${money(launch.initialBuy)} initial buy, ${money(launch.launchFee)} `
-        + `launch fee, ${qty(launch.tokensOut)} tokens to the creator`],
+        ["at launch", `${money(launch.initialBuy)} initial buy, ${launchFeeLine(launch.launchFee)}, `
+        + `${qty(launch.tokensOut)} tokens to the creator`],
         ["block", `${launch.blockNumber} (tx ${launch.txHash})`],
       ];
       if (args.includeState) {
@@ -285,8 +303,8 @@ const tokenTool = defineTool({
     + "TRADES NOW: its bonding curve, its Uniswap v4 pool, or nowhere.\n\n"
     + "For a token in its pool this reports the router this server would trade through, "
     + "whether that router can actually reach the pool, the PoolManager the liquidity is in "
-    + "(a v4 pool has no address of its own), and the pool's own LP fee, which is charged on "
-    + "top of arcnow.io's 1%.\n\n"
+    + "(a v4 pool has no address of its own), and what a trade there costs — arcnow.io's fee "
+    + "hook's 0.80% plus the pool's own 0.20% LP fee, 1.00% in all, both read off the pool.\n\n"
     + "It names the token's QUOTE TOKEN — native USDC or an ERC-20 such as EURC, fixed at "
     + "launch — with its address and decimals: every amount here, and every amount the trade "
     + "tools take for this token, is in that quote.\n\n"
@@ -422,9 +440,11 @@ async function whereItTrades(ctx: ToolContext, market: Market): Promise<string> 
     settle(pool.quoteToken()),
     settle(pool.quoteIsCurrency0()),
   ]);
-  // The SDK checks the hook's VERSION() before it reads the accrual, and refuses
-  // any hook but arcnow/arc-now-fee-hook@3.x.x as UnknownHookVersion.
+  // The SDK checks the hook's VERSION() before it reads the accrual or the
+  // rates, and refuses any hook but arcnow/arc-now-fee-hook@4.x.x as
+  // UnknownHookVersion.
   const accrued = await settle(pool.accruedHookFee());
+  const fees = await settle(pool.fees());
   return section("where it trades", [
     ["venue", "its Uniswap v4 pool — graduated and migrated. The quote and trade tools route "
     + "there on their own, and every pool quote says it is one."],
@@ -451,12 +471,17 @@ async function whereItTrades(ctx: ToolContext, market: Market): Promise<string> 
           + `currency${quoteIsCurrency0 ? 1 : 0}, as the SDK reads the key. The key orders its `
           + "currencies by address, so an ERC-20 quote can be either; every amount here is already "
           + `in ${quote.symbol}`],
-    ["pool fee", key instanceof Error
+    ["fees", fees instanceof Error
+      ? isArcNowError(fees) && fees.code === "UnknownHookVersion"
+        ? `refused: UnknownHookVersion — ${fees.message}`
+        : `could not be read: ${fees.message}`
+      : poolFeesLine(fees, market.state.quoteToken)],
+    ["fee hook", key instanceof Error
       ? `could not be read: ${key.message}`
-      : `${lpFee(key.fee)} — Uniswap's LP fee, on top of arcnow.io's 1%, which the fee hook `
-        + `at ${addr(key.hooks)} takes in ${market.state.quoteToken.symbol}`],
-    ["fee hook", "accrues arcnow.io's 1% as a PoolManager claim and pays it out to the fee "
-    + "recipients at the start of a later swap in this pool, or when anyone calls distributeFees"],
+      : `${addr(key.hooks)} — takes its ${fees instanceof Error ? "share" : bpsPercent(fees.hookFeeBps)} `
+        + `in ${market.state.quoteToken.symbol}, accrues it as a PoolManager claim and pays it out `
+        + "to the creator, the platform and the protocol at the start of a later swap in this "
+        + "pool, or when anyone calls distributeFees. A pool swap has no referrer share."],
     ["hook fees accrued", accrued instanceof Error
       ? isArcNowError(accrued) && accrued.code === "UnknownHookVersion"
         ? `refused: UnknownHookVersion — ${accrued.message}`
@@ -468,7 +493,7 @@ async function whereItTrades(ctx: ToolContext, market: Market): Promise<string> 
           + "part of a trader's fill"],
     ["selling", "needs an ERC-20 approval to the router first, a separate transaction. "
     + "arcnow_sell grants one only when asked, for exactly the amount sold."],
-  ]);
+  ]) + (fees instanceof Error ? "" : `\n\n${poolFeeSplitSection(fees)}`);
 }
 
 async function settle<T>(promise: Promise<T>): Promise<T | Error> {
@@ -487,9 +512,9 @@ const quoteBuy = defineTool({
   access: "read",
   description:
     "What a given amount of the token's quote would buy right now, wherever the token trades: "
-    + "tokens out, "
-    + "every fee and who receives it, the average price the order would fill at, and the "
-    + "minimum-out floor at several slippage tolerances.\n\n"
+    + "tokens out, every fee and who receives it — on a curve the flat 1% split four ways "
+    + "between creator, platform, referrer and protocol — the average price the order would "
+    + "fill at, and the minimum-out floor at several slippage tolerances.\n\n"
     + "Costs nothing and signs nothing. Use it before every buy, and use it INSTEAD of a spot "
     + "price whenever someone asks what an amount would get them — an order moves the price "
     + "across its own size, so the spot price is only ever its first infinitesimal slice.\n\n"
@@ -498,10 +523,10 @@ const quoteBuy = defineTool({
     + "that same transaction or never. Read that part before quoting a graduating buy to "
     + "anyone.\n\n"
     + "IN A UNISWAP V4 POOL (the token graduated and migrated): the quote says it is a pool "
-    + "quote, priced by simulating the real swap through arcnow.io's router. It shows "
-    + "arcnow.io's 1% and the pool's own LP fee as two separate charges, the average fill "
-    + "price against the pool's spot price, and the price impact. referrer and developer do "
-    + "not exist on a pool swap and are refused.\n\n"
+    + "quote, priced by simulating the real swap through arcnow.io's router. It shows the two "
+    + "charges apart — arcnow.io's fee hook's 0.80% and the pool's own 0.20% LP fee, 1.00% in "
+    + "all, both read off the pool — the average fill price against the pool's spot price, and "
+    + "the price impact. referrer does not exist on a pool swap and is refused.\n\n"
     + "A token that graduated but never migrated trades nowhere; this says so and names "
     + "arcnow_migrate. A quote is a snapshot of one block. Anyone else's trade changes it.\n\n"
     + "THE AMOUNT IS IN THE TOKEN'S QUOTE: native USDC, or the ERC-20 (such as EURC) it was "
@@ -518,10 +543,8 @@ const quoteBuy = defineTool({
     referrer: addressArg(
       "CURVE ONLY: the address credited with the referral share of the fee. With no referrer "
       + "that share goes to the platform instead. Refused for a token in its pool, whose swap "
-      + "has no referrer.").optional(),
-    developer: addressArg(
-      "CURVE ONLY: the address credited with the developer share of the fee. With none, it "
-      + "goes to the platform. Refused for a token in its pool.").optional(),
+      + "has no referrer. (There is no developer share and no developer argument: the fee has "
+      + "four parties — creator, platform, referrer, protocol.)").optional(),
   },
   async run(args, ctx) {
     const market = await resolveMarket(ctx, args.address as Address);
@@ -534,11 +557,7 @@ const quoteBuy = defineTool({
 
     const quoteIn = parseQuoteAmount(state.quoteToken, args.quoteIn, "quoteIn");
     const quote = await curve.quoteBuy(quoteIn);
-    const split = await curve.previewFeeSplit(
-      quote.fee,
-      args.referrer as Address | undefined,
-      args.developer as Address | undefined,
-    );
+    const split = await curve.previewFeeSplit(quote.fee, args.referrer as Address | undefined);
     const avg = effectivePrice(quote.quoteSpent, quote.tokensOut);
 
     return {
@@ -547,8 +566,8 @@ const quoteBuy = defineTool({
         section("what you pay and get", [
           ["venue", "its bonding curve"],
           ["you send", buyPaymentLine(quoteIn, `the curve ${addr(curve.address)}`)],
-          ["trade fee", `${money(quote.fee)} — a flat 1% of the input, taken before anything `
-          + "reaches the reserve"],
+          ["trade fee", `${money(quote.fee)} — a flat ${bpsPercent(state.tradeFeeBps)} of the input, `
+          + "taken before anything reaches the reserve and split four ways (below)"],
           ["reaches the curve", money(quote.quoteSpent)],
           ["tokens out", qty(quote.tokensOut, symbol)],
           ["refund", quote.refund.isZero()
@@ -567,7 +586,7 @@ const quoteBuy = defineTool({
           ["tokens sold", `${qty(state.tokensSold)} → ${qty(quote.newTokensSold)}`],
           ["graduates", quote.graduates ? "YES — this is the buy that ends trading" : "no"],
         ]),
-        feeSplitSection(quote.fee, split, args.referrer, args.developer),
+        curveFeeSplitSection(quote.fee, split, args.referrer),
         section("minimum tokens out, by tolerance", TOLERANCES.map((bps) => {
           const floor = Bps.of(10_000n - bps).applyToTokens(quote.tokensOut);
           return [`${bps} bps (${Number(bps) / 100}%)`, qty(floor, symbol)] as [string, string];
@@ -590,8 +609,10 @@ const quoteSell = defineTool({
   access: "read",
   description:
     "What a given quantity of tokens would fetch right now, wherever the token trades: "
-    + "gross proceeds, every fee and who receives it, net proceeds in the token's quote (native "
-    + "USDC or an ERC-20 such as EURC), and the minimum-out floor at several tolerances.\n\n"
+    + "gross proceeds, every fee and who receives it — on a curve the flat 1% split four ways "
+    + "between creator, platform, referrer and protocol — net proceeds in the token's quote "
+    + "(native USDC or an ERC-20 such as EURC), and the minimum-out floor at several "
+    + "tolerances.\n\n"
     + "Costs nothing and signs nothing.\n\n"
     + "ON A BONDING CURVE: selling needs NO approval, ever. The curve pulls the tokens "
     + "through a privileged path that reads no allowance at all, so a holder who has "
@@ -600,11 +621,12 @@ const quoteSell = defineTool({
     + "IN A UNISWAP V4 POOL (the token graduated and migrated) it is the other way round, and "
     + "worth telling a user before they sell: the router pulls the tokens with transferFrom, "
     + "so a pool sell needs an ERC-20 APPROVAL to the router first — a separate transaction. "
-    + "This quote says it is a pool quote, shows arcnow.io's 1% and the pool's own LP fee "
-    + "separately, the average fill against the pool's spot price, the price impact, and "
-    + "how much `holder` has approved the router for already. A pool sell is priced as a "
-    + "real holder, so `holder` must actually hold the tokens; on a writing server it "
-    + "defaults to the signing address. referrer and developer are refused on a pool.\n\n"
+    + "This quote says it is a pool quote, shows arcnow.io's fee hook's 0.80% and the pool's "
+    + "own 0.20% LP fee apart (1.00% in all, read off the pool), the average fill against the "
+    + "pool's spot price, the price impact, and how much `holder` has approved the router for "
+    + "already. A pool sell is priced as a real holder, so `holder` must actually hold the "
+    + "tokens; on a writing server it defaults to the signing address. referrer is refused on "
+    + "a pool.\n\n"
     + "A token that graduated but never migrated trades nowhere; this says so and names "
     + "arcnow_migrate.",
   input: {
@@ -618,10 +640,7 @@ const quoteSell = defineTool({
       + "bonding curve, where a sell is priced for nobody in particular.").optional(),
     referrer: addressArg(
       "CURVE ONLY: credited with the referral share of the fee. Refused for a token in its "
-      + "pool.").optional(),
-    developer: addressArg(
-      "CURVE ONLY: credited with the developer share of the fee. Refused for a token in its "
-      + "pool.").optional(),
+      + "pool. There is no developer argument: the fee has four parties.").optional(),
   },
   async run(args, ctx) {
     const market = await resolveMarket(ctx, args.address as Address);
@@ -634,11 +653,7 @@ const quoteSell = defineTool({
 
     const tokensIn = Tokens.parse(args.tokensIn);
     const quote = await curve.quoteSell(tokensIn);
-    const split = await curve.previewFeeSplit(
-      quote.fee,
-      args.referrer as Address | undefined,
-      args.developer as Address | undefined,
-    );
+    const split = await curve.previewFeeSplit(quote.fee, args.referrer as Address | undefined);
     const avg = effectivePrice(quote.gross, tokensIn);
 
     return {
@@ -648,7 +663,8 @@ const quoteSell = defineTool({
           ["venue", "its bonding curve"],
           ["you send", `${qty(tokensIn, symbol)} — no approval needed, and none will be asked for`],
           ["gross", money(quote.gross)],
-          ["trade fee", `${money(quote.fee)} — the same flat 1%, taken from the proceeds`],
+          ["trade fee", `${money(quote.fee)} — the same flat ${bpsPercent(state.tradeFeeBps)}, taken `
+          + "from the proceeds and split four ways (below)"],
           ["you receive", money(quote.quoteOut.floorToRepresentable())],
           ["average fill price", avg === undefined ? "n/a" : price(avg)],
         ]),
@@ -658,7 +674,7 @@ const quoteSell = defineTool({
           ["real reserve", `${money(state.realReserve)} → ${money(quote.newReserve)}`],
           ["tokens sold", `${qty(state.tokensSold)} → ${qty(quote.newTokensSold)}`],
         ]),
-        feeSplitSection(quote.fee, split, args.referrer, args.developer),
+        curveFeeSplitSection(quote.fee, split, args.referrer),
         section(`minimum ${state.quoteToken.symbol} out, by tolerance`, TOLERANCES.map((bps) => {
           const floor = Bps.of(10_000n - bps).applyToQuote(quote.quoteOut);
           return [`${bps} bps (${Number(bps) / 100}%)`, money(floor)] as [string, string];
@@ -683,17 +699,18 @@ const quoteLaunch = defineTool({
   title: "Quote a launch",
   access: "read",
   description:
-    "What launching a token would cost, before anything is spent: the flat launch fee, the "
-    + "initial buy, the 1% trade fee the initial buy itself pays, the tokens the creator "
-    + "would receive, and — given a creator address — the exact addresses the token and its "
-    + "curve would land at.\n\n"
+    "What launching a token would cost, before anything is spent: the launch fee the quote "
+    + "registry sets for the quote (zero on arcnow.io's networks — launching is free — but read "
+    + "live, never assumed), the initial buy, the 1% trade fee the initial buy itself pays, the "
+    + "tokens the creator would receive, and — given a creator address — the exact addresses "
+    + "the token and its curve would land at.\n\n"
     + "Costs nothing and signs nothing. Always call this before arcnow_launch and show the "
     + "user the total, because a launch is irreversible: the name, symbol, supply, curve "
     + "shape and graduation venue are fixed at that transaction and can never be changed "
     + "afterwards, by anyone, including whoever launched it.\n\n"
     + "THE QUOTE. A token is priced for life in the quote it launches in: `quote` names it by "
     + "symbol or address — native USDC by default, or an ERC-20 such as EURC that the quote "
-    + "registry accepts (arcnow_quote_tokens). The launch fee and the initial buy are both in that "
+    + "registry accepts (arcnow_quote_tokens). The initial buy — and any launch fee — is in that "
     + "quote, and so is every trade in the token afterwards. Native USDC is paid as msg.value; an "
     + "ERC-20 is pulled by the launchpad after an exact approval.\n\n"
     + "The total is EXACTLY what a launch requires, not a minimum — for native USDC the launchpad "
@@ -708,8 +725,9 @@ const quoteLaunch = defineTool({
     initialBuy: decimalArg(
       "How much of the launch's quote the creator spends buying their own token in the launch "
       + "transaction, in whole units, with no more decimals than the quote has. It is an "
-      + "ORDINARY buy: it runs through the curve and pays the 1% trade fee on top of the flat "
-      + "launch fee. There is no fee-free entry into a curve. \"0\" is allowed."),
+      + "ORDINARY buy: it runs through the curve and pays the 1% trade fee. There is no fee-free "
+      + "entry into a curve, and no launch fee on top of it on arcnow.io's networks. \"0\" is "
+      + "allowed."),
     quote: quoteArg(),
     creator: addressArg(
       "Optional: the address that would launch. Given one, this also predicts the token and "
@@ -751,10 +769,11 @@ const quoteLaunch = defineTool({
             ? `${money(quote.totalCost)} — this is the exact value the launch transaction must `
             + "carry. Overpaying reverts; there is no refund path."
             : `${money(quote.totalCost)} — exactly what the launchpad pulls, no more`],
-          ["  launch fee", `${money(quote.launchFee)} — flat, to the launchpad, as the quote registry `
-          + `sets it for ${quoteToken.symbol} now`],
+          ["  launch fee", `${launchFeeLine(quote.launchFee)} — as the quote registry sets it for `
+          + `${quoteToken.symbol} now`],
           ["  initial buy", money(quote.initialBuy)],
-          ["  of which fee", `${money(quote.tradeFee)} — the initial buy's own 1%`],
+          ["  of which fee", `${money(quote.tradeFee)} — the initial buy's own 1%, split four ways `
+          + "like every curve trade's"],
           ["paid as", quoteToken.isNative
             ? `msg.value: exactly ${money(quote.nativeValue)}`
             : `an ERC-20 pull by the launchpad — the transaction carries no value. An exact approve `
@@ -815,8 +834,8 @@ const quoteLaunch = defineTool({
 export function quoteArg() {
   return z.string().min(1).max(64).optional().describe(
     "Optional: the quote token to launch in, by symbol (\"USDC\", \"EURC\") or by address. "
-    + "Defaults to native USDC. The token is priced in it FOR LIFE: its launch fee, its initial "
-    + "buy, and every trade in it afterwards. A symbol is looked up in this network's own quote "
+    + "Defaults to native USDC. The token is priced in it FOR LIFE: its initial buy and every "
+    + "trade in it afterwards. A symbol is looked up in this network's own quote "
     + "tokens only. arcnow_quote_tokens lists them with whether the quote registry accepts each "
     + "and this server's spend cap for it; a quote with no cap cannot be launched in here.");
 }
@@ -827,15 +846,16 @@ const platform = defineTool({
   access: "read",
   description:
     "One platform's configuration: who administers it, who receives its cut, how the 1% "
-    + "trade fee is divided between creator, referrer, developer, the platform and the "
-    + "protocol, which migrator it launches tokens into by default, and the curve template "
-    + "it stamps onto every token it launches.\n\n"
+    + "trade fee is divided FOUR ways — creator, referrer, the platform and the protocol; "
+    + "there is no developer share — which migrator it launches tokens into by default, and "
+    + "the curve template it stamps onto every token it launches.\n\n"
     + "With no address, reports arcnow.io's own platform — the default a launch uses.\n\n"
     + "The single easiest thing to misread here is what a share means. Every share is basis "
     + "points OF THE FEE, never of the trade. A creator share of 3000 bps is 30% of the fee "
     + "and 0.30% of the trade. This tool prints both, every time. The platform's own share "
     + "is never configured: it is the residual, whatever is left after the protocol, "
-    + "creator, referrer and developer shares.",
+    + "creator and referrer shares — arcnow.io's own is creator 3000 / referrer 1000 / "
+    + "platform 3500 / protocol 2500.",
   input: {
     address: addressArg(
       "Optional: the PlatformConfig address. Defaults to arcnow.io's own platform.").optional(),
@@ -869,16 +889,13 @@ const platform = defineTool({
           ["fee recipient", addr(settings.feeRecipient)],
           ["certified", "yes — this registry deployed this PlatformConfig itself"],
         ]),
-        section("how the 1% trade fee is divided", [
-          ["creator", share(settings.creatorShareBps, TRADE_FEE)],
-          ["referrer", share(settings.refShareBps, TRADE_FEE)],
-          ["developer", share(settings.devShareBps, TRADE_FEE)],
-          ["protocol", share(fees.protocolShareBps, TRADE_FEE)],
-          ["platform", `${share(settings.platformShareBps, TRADE_FEE)} — the RESIDUAL. Not an `
-          + "input anywhere in the contracts; it is 10000 minus the four above, computed on "
-          + "demand."],
-          ["", "A share whose address is zero at swap time — no referrer, no developer — is "
-          + "paid to the platform instead, as is the rounding dust."],
+        section("how the 1% trade fee is divided — four ways, on a curve", [
+          ...curveSplitRows(fees, TRADE_FEE),
+          ["developer", "none — there is no developer share; the fee has these four parties"],
+          ["", "A share whose address is zero at swap time — no referrer named — is paid to "
+          + "the platform instead, as is the rounding dust. In a graduated token's pool the "
+          + `hook applies its own split of its ${bpsPercent(POOL_HOOK_FEE)}, not this one: `
+          + "arcnow_token shows it."],
         ]),
         section("defaults it stamps on a launch", [
           ["migrator", `${addr(settings.defaultMigrator)} — `
@@ -897,8 +914,8 @@ const platform = defineTool({
         section("the protocol, above every platform", [
           ["share", share(protocol.protocolShareBps, TRADE_FEE)],
           ["recipient", addr(protocol.protocolRecipient)],
-          ["launch fee", `${money(protocol.launchFee)} — flat, per launch in native USDC, on top of `
-          + "any initial buy. Each quote token has its own: arcnow_quote_tokens"],
+          ["launch fee", `${launchFeeLine(protocol.launchFee)} — per launch in native USDC, as the `
+          + "quote registry sets it. Each quote token has its own: arcnow_quote_tokens"],
         ]),
       ),
     };
@@ -940,9 +957,9 @@ const listPlatforms = defineTool({
         const settings = await ctx.port.platforms.settings(address);
         blocks.push(section(`#${i} ${addr(address)}${isDefault ? "  (arcnow.io's own)" : ""}`, [
           ["fee recipient", addr(settings.feeRecipient)],
-          ["creator / ref / dev / platform", `${settings.creatorShareBps.bps} / `
-          + `${settings.refShareBps.bps} / ${settings.devShareBps.bps} / `
-          + `${settings.platformShareBps.bps} bps of the fee`],
+          ["creator / ref / platform", `${settings.creatorShareBps.bps} / `
+          + `${settings.refShareBps.bps} / ${settings.platformShareBps.bps} bps of the fee, `
+          + "the protocol's share above all of them; no developer share"],
           ["default venue", `${addr(settings.defaultMigrator)} — `
           + venueOf(settings.defaultMigrator, ctx.port.config)],
           ["graduation target", "per quote token — arcnow_platform shows it"],
@@ -973,8 +990,9 @@ const quoteTokens = defineTool({
     + "is priced in for life: native USDC (the gas currency, 18 decimals, paid as msg.value) and "
     + "the ERC-20s arcnow.io's quote registry allowlists, such as EURC (6 decimals, pulled with "
     + "an exact ERC-20 approval). For each: symbol, name, decimals, address, whether it is "
-    + "native, its flat launch fee in its own units, whether the registry accepts it for new "
-    + "launches now, and this server's spend cap for it.\n\n"
+    + "native, its launch fee in its own units (zero on arcnow.io's networks — launching is "
+    + "free — but read from the registry, never assumed), whether the registry accepts it for "
+    + "new launches now, and this server's spend cap for it.\n\n"
     + "SPEND CAPS ARE PER QUOTE, AND FAIL CLOSED. The operator caps native USDC with "
     + "ARCNOW_MCP_MAX_SPEND_USDC (default 100) and every other quote with "
     + "ARCNOW_MCP_MAX_SPEND_<SYMBOL>, in that quote's own units (ARCNOW_MCP_MAX_SPEND_EURC=50). "
@@ -982,8 +1000,7 @@ const quoteTokens = defineTool({
     + "list can have no cap at all. Tell the user which quotes they can actually spend here "
     + "before offering a launch or a buy in one.\n\n"
     + "Reads the registry in at most three eth_calls. If the chain has no quote registry to ask "
-    + "— the 2.x contracts Arc testnet ran until the multi-quote reset have none — this says so, "
-    + "shows the error, "
+    + "— a deployment older than quote registries has none — this says so, shows the error, "
     + "and lists this network's own quote-token metadata instead, with NOTHING known to be "
     + "accepted. Takes no arguments and spends nothing.",
   input: {},
@@ -999,9 +1016,8 @@ const quoteTokens = defineTool({
           + "priced in, not what the launchpad takes.",
           renderError("arcnow_quote_tokens", error),
           note("Do not tell a user a quote is accepted on the strength of this list. A launch in "
-            + "a quote the registry does not accept reverts QuoteTokenNotSupported; the 2.x "
-            + "contracts Arc testnet ran until the multi-quote reset have no registry at all and "
-            + "accept only native USDC."),
+            + "a quote the registry does not accept reverts QuoteTokenNotSupported; a deployment "
+            + "with no quote registry at all accepts only native USDC."),
           ...ctx.port.config.quoteTokens.map((token) => section(`${token.symbol} — ${token.name}`, [
             ...quoteTokenRows(token),
             ["launch fee", "unknown — the registry could not be read"],
@@ -1016,7 +1032,8 @@ const quoteTokens = defineTool({
         `${entries.length} quote token(s) registered with this launchpad's quote registry.`,
         ...entries.map(({ token, launchFee, active }) => section(`${token.symbol} — ${token.name}`, [
           ...quoteTokenRows(token),
-          ["launch fee", `${money(launchFee)} — flat, per launch in ${token.symbol}`],
+          ["launch fee", `${launchFeeLine(launchFee)} — per launch, in ${token.symbol}, as the `
+          + "registry sets it"],
           ["active", active
             ? "yes — a launch may use it"
             : "NO — deregistered: no new launch may use it. Curves already priced in it keep "
@@ -1067,24 +1084,15 @@ export function statusLine(graduated: boolean, migrated: boolean): string {
     + "trades nowhere. migrate() is permissionless; anyone can finish it.";
 }
 
-export function feeSplitSection(
-  fee: QuoteAmount,
-  split: FeeSplit,
-  referrer: string | undefined,
-  developer: string | undefined,
-): string {
-  const rows: [string, string][] = [
-    ["creator", `${money(split.creatorAmount)}  → ${addr(split.creator)}`],
-    ["platform", `${money(split.platformAmount)}  → ${addr(split.platform)}`],
-    ["referrer", referrer === undefined
-      ? `${money(split.refAmount)}  → no referrer given, so this goes to the platform`
-      : `${money(split.refAmount)}  → ${addr(split.ref)}`],
-    ["developer", developer === undefined
-      ? `${money(split.devAmount)}  → no developer given, so this goes to the platform`
-      : `${money(split.devAmount)}  → ${addr(split.dev)}`],
-    ["protocol", `${money(split.protocolAmount)}  → ${addr(split.protocol)}`],
-  ];
-  return section(`fee split — where the ${money(fee)} goes`, rows);
+/**
+ * A launch fee, as the registry reports it. Zero on every quote arcnow.io
+ * registers — launching is free — and said so; anything else is printed as the
+ * amount it is, because the figure is read, not assumed.
+ */
+export function launchFeeLine(fee: QuoteAmount): string {
+  return fee.isZero()
+    ? `${money(fee)} launch fee — launching is free`
+    : `${money(fee)} launch fee`;
 }
 
 function describe(error: unknown): string {

@@ -38,7 +38,7 @@ const MINIMAL_ARGS: Record<string, Record<string, unknown>> = {
   arcnow_register_platform: {
     admin: "0x4444444444444444444444444444444444444444",
     feeRecipient: "0x5555555555555555555555555555555555555555",
-    creatorShareBps: 3000, refShareBps: 1000, devShareBps: 1000,
+    creatorShareBps: 3000, refShareBps: 1000,
     defaultMigrator: "0x878ce48a169c1699ff9e6b5db6a47292dca6cd27",
   },
 };

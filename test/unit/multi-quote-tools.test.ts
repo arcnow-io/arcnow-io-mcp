@@ -93,7 +93,7 @@ describe("a token priced in a 6-decimal ERC-20 (EURC)", () => {
     const { ctx } = ctxReadOnly({ quote: EURC });
     const result = await callTool("arcnow_list_tokens", { limit: 1 }, ctx);
     expect(result.text).toMatch(/quote\s+EURC/);
-    expect(result.text).toMatch(/25 EURC initial buy, 2 EURC launch fee/);
+    expect(result.text).toMatch(/25 EURC initial buy, 0 EURC launch fee — launching is free/);
     expect(result.text).not.toMatch(USDC_FIGURE);
   });
 });
@@ -131,7 +131,8 @@ describe("a pool's quote is the SDK's, in either currency order", () => {
     expect(token.text).toMatch(/quote currency\s+EURC — currency1 of the pool key, with the token as currency0/);
     const quote = await callTool("arcnow_quote_buy", { address: TOKEN, quoteIn: "1" }, ctx);
     expect(quote.isError, quote.text).toBeUndefined();
-    expect(quote.text).toMatch(/arcnow\.io fee\s+0\.01 EURC/);
+    // The hook's 0.80% of 1 EURC, in EURC — never the curve's 1%.
+    expect(quote.text).toMatch(/arcnow\.io fee\s+0\.008 EURC — 0\.8% of the trade \(80 bps\), read from the hook/);
     expect(quote.text).toMatch(/pool spot price\s+0\.000\d+ EURC per token/);
     expect(quote.text).not.toMatch(USDC_FIGURE);
   });
@@ -168,7 +169,7 @@ describe("a pool's quote is the SDK's, in either currency order", () => {
     expect(port.writes[0]?.args).toMatchObject({ spender: ROUTER, amount: "1" });
     expect(result.text).toMatch(/approve\s+SENT/);
     expect(result.text).toContain(QUOTE_APPROVE_TX);
-    expect(result.text).toMatch(/arcnow\.io fee\s+0\.01 EURC/);
+    expect(result.text).toMatch(/arcnow\.io fee\s+0\.008 EURC — what arcnow\.io's fee hook took, at 0\.8% of the trade \(80 bps\)/);
   });
 });
 
@@ -255,9 +256,11 @@ describe("the ERC-20 approval an ERC-20 spend needs", () => {
     const result = await callTool("arcnow_launch", launchArgs({ quote: "EURC" }), ctx);
     expect(result.isError, result.text).toBeUndefined();
     expect(port.writes.map((w) => w.what)).toEqual(["write:quote.approve", "write:launch"]);
-    expect(port.writes[0]?.args).toMatchObject({ spender: NETWORK.contracts.launchpad, amount: "27" });
+    // Launching is free, so the total IS the initial buy: 25 EURC, no fee on top.
+    expect(port.writes[0]?.args).toMatchObject({ spender: NETWORK.contracts.launchpad, amount: "25" });
     expect(port.writes[1]?.args).toMatchObject({ quote: "EURC", value: "0" });
-    expect(result.text).toMatch(/total\s+27 EURC — exactly, pulled by the launchpad/);
+    expect(result.text).toMatch(/total\s+25 EURC — exactly, pulled by the launchpad/);
+    expect(result.text).toMatch(/launch fee\s+0 EURC launch fee — launching is free/);
     expect(result.text).toMatch(/approve\s+SENT first/);
     expect(result.text).toContain(QUOTE_APPROVE_TX);
   });
@@ -269,7 +272,7 @@ describe("the ERC-20 approval an ERC-20 spend needs", () => {
     const result = await callTool("arcnow_launch", launchArgs({ quote: "EURC" }), ctx);
     expect(result.isError).toBe(true);
     expect(result.text).toMatch(/QuoteTokenNotSupported/);
-    expect(flat(result.text)).toMatch(/EURC allowance to the launchpad now stands at 27 EURC/);
+    expect(flat(result.text)).toMatch(/EURC allowance to the launchpad now stands at 25 EURC/);
     expect(port.writes.map((w) => w.what)).toEqual(["write:quote.approve"]);
     expect(whats(port)).toContain("read:quote.spendState");
   });
@@ -294,8 +297,9 @@ describe("arcnow_quote_tokens", () => {
     expect(result.text).toMatch(/decimals\s+6/);
     expect(result.text).toMatch(/kind\s+native/);
     expect(result.text).toMatch(/kind\s+ERC-20/);
-    expect(result.text).toMatch(/launch fee\s+2 EURC/);
-    expect(result.text).toMatch(/launch fee\s+2 USDC/);
+    // Zero on both, and said to be free — but printed from the registry's answer, not assumed.
+    expect(result.text).toMatch(/launch fee\s+0 EURC launch fee — launching is free/);
+    expect(result.text).toMatch(/launch fee\s+0 USDC launch fee — launching is free/);
     expect(result.text).toMatch(/active\s+yes/);
     expect(result.text).toMatch(/spend cap\s+100 USDC per write call/);
     expect(flat(result.text)).toMatch(/spend cap NONE — every launch or buy in EURC is refused until the operator sets ARCNOW_MCP_MAX_SPEND_EURC/);
@@ -339,8 +343,8 @@ describe("the launch tools' quote", () => {
   it("defaults to native USDC, paid as msg.value", async () => {
     const { ctx } = ctxReadOnly();
     const result = await callTool("arcnow_quote_launch", QUOTE_LAUNCH, ctx);
-    expect(result.text).toMatch(/total, exactly\s+27 USDC/);
-    expect(result.text).toMatch(/paid as\s+msg\.value: exactly 27 USDC/);
+    expect(result.text).toMatch(/total, exactly\s+25 USDC/);
+    expect(result.text).toMatch(/paid as\s+msg\.value: exactly 25 USDC/);
   });
 
   it.each(["EURC", "eurc", EURC.address, getAddress(EURC.address)])(
@@ -349,8 +353,8 @@ describe("the launch tools' quote", () => {
       const { ctx, port } = ctxReadOnly();
       const result = await callTool("arcnow_quote_launch", { ...QUOTE_LAUNCH, quote }, ctx);
       expect(result.isError, result.text).toBeUndefined();
-      expect(result.text).toMatch(/total, exactly\s+27 EURC/);
-      expect(result.text).toMatch(/launch fee\s+2 EURC/);
+      expect(result.text).toMatch(/total, exactly\s+25 EURC/);
+      expect(result.text).toMatch(/launch fee\s+0 EURC launch fee — launching is free/);
       expect(result.text).toMatch(/initial buy\s+25 EURC/);
       expect(result.text).toMatch(/of which fee\s+0\.25 EURC/);
       expect(flat(result.text)).toMatch(/an ERC-20 pull by the launchpad — the transaction carries no value/);
@@ -374,7 +378,7 @@ describe("the launch tools' quote", () => {
     const { ctx, port } = ctxReadOnly({ unlistedQuotes: [WETHX] });
     const result = await callTool("arcnow_quote_launch", { ...QUOTE_LAUNCH, quote: WETHX.address }, ctx);
     expect(result.isError, result.text).toBeUndefined();
-    expect(result.text).toMatch(/total, exactly\s+27 WETHX/);
+    expect(result.text).toMatch(/total, exactly\s+25 WETHX/);
     expect(whats(port)).toContain("read:quoteTokenInfo");
     expect(flat(result.text)).toMatch(/not one of this network's quote tokens/);
   });
@@ -407,8 +411,8 @@ describe("the launch tools' quote", () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("the 2.x contracts Arc testnet ran until the multi-quote reset", () => {
-  it("a 2.x curve is refused by name: UnknownCurveVersion, naming the version it answered", async () => {
+describe("the retired multi-quote stack (3.x), whose data was wiped", () => {
+  it("a 3.x curve is refused by name: UnknownCurveVersion, naming the version it answered", async () => {
     const { ctx } = ctxReadOnly({
       state: { version: RETIRED_CURVE_VERSION },
       tokenCurveThrows: new Error("execution reverted"),
@@ -416,9 +420,11 @@ describe("the 2.x contracts Arc testnet ran until the multi-quote reset", () => 
     const result = await callTool("arcnow_token", { address: CURVE }, ctx);
     expect(result.isError).toBe(true);
     expect(result.text).toMatch(/^arcnow_token refused: UnknownCurveVersion/);
-    expect(result.text).toContain("arcnow/bonding-curve@2.0.0");
-    expect(flat(result.text)).toMatch(/arcnow\/bonding-curve@3\.x\.x/);
-    expect(flat(result.text)).toMatch(/2\.x contracts Arc testnet ran until the multi-quote reset/);
+    expect(result.text).toContain("arcnow/bonding-curve@3.0.0");
+    expect(flat(result.text)).toMatch(/arcnow\/bonding-curve@4\.x\.x/);
+    expect(flat(result.text)).toMatch(/retired multi-quote stack/);
+    // The SDK's own refusal names what that stack did differently, so nobody prices it by hand.
+    expect(flat(result.text)).toMatch(/developer share/);
   });
 
   it("a quote registry of another version is refused by name, and the tool says which component", () => {

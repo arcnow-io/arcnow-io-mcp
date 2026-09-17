@@ -18,10 +18,10 @@
  *
  * `trade(token)` dispatches on the curve state's `migrated` flag the way
  * `client.trade(token).venue()` dispatches on `token.migratedPool()`, and it
- * refuses what the SDK refuses — a `recipient` on the curve, a `referrer`,
- * `developer` or `gasLimit` on the pool, a pool sell with too small an
- * allowance, an amount in another quote (`QuoteTokenMismatch`), an ERC-20
- * amount below one raw unit (`QuoteAmountNotRepresentable`).
+ * refuses what the SDK refuses — a `recipient` on the curve, a `referrer` or
+ * `gasLimit` on the pool, a pool sell with too small an allowance, an amount in
+ * another quote (`QuoteTokenMismatch`), an ERC-20 amount below one raw unit
+ * (`QuoteAmountNotRepresentable`).
  *
  * # Quote tokens
  *
@@ -33,11 +33,23 @@
  * # One curve, and versions checked the way the SDK checks them
  *
  * arcnow.io has one bonding curve, the constant-product
- * `arcnow/bonding-curve@3.x.x`. Before every read, quote and trade this fake runs
- * the SDK's own `assertCurveVersion` on the scripted version, and before a
- * platform read or a launch its own `assertPlatformVersion`, so any other
- * version — the 2.x stack Arc testnet ran until the multi-quote reset included — throws the SDK's
- * own refusal. The pool's fee hook is `arcnow/arc-now-fee-hook@3.x.x`.
+ * `arcnow/bonding-curve@4.x.x` of the fee-model stack. Before every read, quote
+ * and trade this fake runs the SDK's own `assertCurveVersion` on the scripted
+ * version, before a platform read or a launch its `assertPlatformVersion`, and
+ * before anything is read off the pool's hook its `assertHookVersion`, so any
+ * other version — the retired multi-quote `@3.x.x` stack included — throws the
+ * SDK's own refusal. The pool's fee hook is `arcnow/arc-now-fee-hook@4.x.x`.
+ *
+ * # Fees, the way the live stack charges them
+ *
+ * The curve's 1% is split four ways — creator 3000 / ref 1000 / platform 3500 /
+ * protocol 2500, arcnow.io's own — and there is no developer share anywhere.
+ * The pool's hook takes {@link POOL_TRADE_FEE_BPS} (0.80%) off a buy's input
+ * or out of a sell's payout and splits it creator 5000 / platform 1875 /
+ * protocol 3125; the pool key carries {@link POOL_LP_FEE_PIPS} (0.20%) unless a
+ * test scripts another LP fee, and `fees()` reports whatever the key carries,
+ * as the SDK's does. Launching is free: every launch fee this fake reports is
+ * zero, as the quote registry's is on both live networks.
  */
 
 import type { Address, Hash } from "viem";
@@ -73,6 +85,7 @@ import type {
 import {
   ArcNowError,
   assertCurveVersion,
+  assertHookVersion,
   assertPlatformVersion,
   Bps,
   buyFeeFromQuoteIn,
@@ -80,6 +93,11 @@ import {
   erc20GasLimit,
   findQuoteToken,
   NATIVE_USDC,
+  POOL_CREATOR_SHARE_BPS,
+  POOL_LP_FEE_PIPS,
+  POOL_PLATFORM_SHARE_BPS,
+  POOL_PROTOCOL_SHARE_BPS,
+  POOL_TRADE_FEE_BPS,
   QuoteAmount,
   quoteTokenInfo,
   requireSameQuote,
@@ -149,20 +167,23 @@ export const WETHX: QuoteTokenInfo = quoteTokenInfo({
   decimals: 18,
 });
 
-/** The one bonding curve the SDK prices. */
-export const CURVE_VERSION = "arcnow/bonding-curve@3.0.0";
-/** A 2.x curve, as every token launched before the multi-quote reset still
- *  answers: refused by name, never priced. */
-export const RETIRED_CURVE_VERSION = "arcnow/bonding-curve@2.0.0";
+/** The one bonding curve the SDK prices: the fee-model stack's. */
+export const CURVE_VERSION = "arcnow/bonding-curve@4.0.0";
+/** The retired multi-quote stack's curve, refused by name and never priced. */
+export const RETIRED_CURVE_VERSION = "arcnow/bonding-curve@3.0.0";
 /** What an arcnow.io token answers to VERSION(), which the SDK reads when asked for a curve. */
-export const TOKEN_VERSION = "arcnow/arc-token@1.0.0";
-export const HOOK_VERSION = "arcnow/arc-now-fee-hook@3.0.0";
-export const RETIRED_HOOK_VERSION = "arcnow/arc-now-fee-hook@2.0.0";
-export const PLATFORM_VERSION = "arcnow/platform-config@3.0.0";
-export const RETIRED_PLATFORM_VERSION = "arcnow/platform-config@2.0.0";
+export const TOKEN_VERSION = "arcnow/arc-token@2.0.0";
+export const HOOK_VERSION = "arcnow/arc-now-fee-hook@4.0.0";
+/** The retired multi-quote stack's hook, which charged the curve's 1% in the pool. */
+export const RETIRED_HOOK_VERSION = "arcnow/arc-now-fee-hook@3.0.0";
+export const PLATFORM_VERSION = "arcnow/platform-config@4.0.0";
+export const RETIRED_PLATFORM_VERSION = "arcnow/platform-config@3.0.0";
 
-/** What the shipped template snapshots onto a curve: the SDK's own figures. */
+/** What the testnet template snapshots onto a curve: the SDK's own figures. */
 export const CURVE_PARAMS: CurveParams = CurveTemplate.params(CurveTemplate.arcnowDefaults());
+
+/** The hook's rate, as `Pool.fees()` reads it: 80 bps of the trade. */
+export const HOOK_FEE = Bps.of(POOL_TRADE_FEE_BPS);
 
 /** Orders below this fill at the spot price: the probe a spot price is read from. */
 const IMPACT_FREE_BELOW_WAD = WAD / 20n;
@@ -210,7 +231,7 @@ export interface FakeScript {
 
   /** The pool's spot price, in the quote per token. */
   poolPrice?: string | undefined;
-  /** The pool's LP fee, in hundredths of a bip. Uniswap's, not arcnow.io's. */
+  /** The pool key's LP fee, in hundredths of a bip. The migrator's 2000 (0.20%) by default. */
   poolFee?: number | undefined;
   /** How far an order worse than the spot price fills, in bps. */
   poolImpactBps?: bigint | undefined;
@@ -261,7 +282,7 @@ export function defaultState(
   };
 }
 
-/** The SDK's own check, on the scripted curve: anything but `@3.x.x` throws its refusal. */
+/** The SDK's own check, on the scripted curve: anything but `@4.x.x` throws its refusal. */
 function checkCurve(state: CurveState, address: Address): void {
   assertCurveVersion(state.version, `the curve at ${address}`, address);
 }
@@ -294,42 +315,61 @@ function defaultSellQuote(quote: QuoteTokenInfo, over: Partial<SellQuote> = {}):
   };
 }
 
-function feeConfig(): FeeConfig {
+export const PLATFORM_RECIPIENT = "0x5555555555555555555555555555555555555555" as Address;
+export const PROTOCOL_RECIPIENT = "0x6666666666666666666666666666666666666666" as Address;
+
+/** arcnow.io's own curve split: creator 3000 / ref 1000 / platform 3500 / protocol 2500. */
+export function feeConfig(): FeeConfig {
   return {
     creatorShareBps: Bps.of(3000n),
-    platformShareBps: Bps.of(2500n),
+    platformShareBps: Bps.of(3500n),
     refShareBps: Bps.of(1000n),
-    devShareBps: Bps.of(1000n),
     protocolShareBps: Bps.of(2500n),
-    platformRecipient: "0x5555555555555555555555555555555555555555" as Address,
-    protocolRecipient: "0x6666666666666666666666666666666666666666" as Address,
+    platformRecipient: PLATFORM_RECIPIENT,
+    protocolRecipient: PROTOCOL_RECIPIENT,
   };
 }
 
-function feeSplit(fee: QuoteAmount, referrer?: Address, developer?: Address): FeeSplit {
+/** The hook's split of its 0.80%, as it is written at graduation: no referrer share. */
+export function poolFeeConfig(): FeeConfig {
+  return {
+    creatorShareBps: Bps.of(POOL_CREATOR_SHARE_BPS),
+    platformShareBps: Bps.of(POOL_PLATFORM_SHARE_BPS),
+    refShareBps: Bps.ZERO,
+    protocolShareBps: Bps.of(POOL_PROTOCOL_SHARE_BPS),
+    platformRecipient: PLATFORM_RECIPIENT,
+    protocolRecipient: PROTOCOL_RECIPIENT,
+  };
+}
+
+/**
+ * Four amounts that total the fee: the three proportional shares floored, the
+ * platform the residual.
+ */
+function feeSplit(fee: QuoteAmount, referrer?: Address): FeeSplit {
   const cfg = feeConfig();
+  const creatorAmount = cfg.creatorShareBps.applyToQuote(fee);
+  const refAmount = cfg.refShareBps.applyToQuote(fee);
+  const protocolAmount = cfg.protocolShareBps.applyToQuote(fee);
   return {
     creator: CREATOR,
     platform: cfg.platformRecipient,
     ref: referrer ?? cfg.platformRecipient,
-    dev: developer ?? cfg.platformRecipient,
     protocol: cfg.protocolRecipient,
-    creatorAmount: cfg.creatorShareBps.applyToQuote(fee),
-    platformAmount: cfg.platformShareBps.applyToQuote(fee),
-    refAmount: cfg.refShareBps.applyToQuote(fee),
-    devAmount: cfg.devShareBps.applyToQuote(fee),
-    protocolAmount: cfg.protocolShareBps.applyToQuote(fee),
+    creatorAmount,
+    platformAmount: fee.sub(creatorAmount).sub(refAmount).sub(protocolAmount),
+    refAmount,
+    protocolAmount,
   };
 }
 
 export function platformSettings(over: Partial<PlatformSettings> = {}): PlatformSettings {
   return {
     admin: "0x7777777777777777777777777777777777777777" as Address,
-    feeRecipient: "0x5555555555555555555555555555555555555555" as Address,
+    feeRecipient: PLATFORM_RECIPIENT,
     creatorShareBps: Bps.of(3000n),
     refShareBps: Bps.of(1000n),
-    devShareBps: Bps.of(1000n),
-    platformShareBps: Bps.of(2500n),
+    platformShareBps: Bps.of(3500n),
     defaultMigrator: NETWORK.contracts.v4Migrator ?? CURVE,
     version: PLATFORM_VERSION,
     ...over,
@@ -351,10 +391,9 @@ export function templateIn(quote: QuoteTokenInfo): CurveTemplateParams {
 /** The same refusal the SDK's `Trade` makes, so a forwarded parameter cannot pass unnoticed. */
 function refuseCurveOnly(request: {
   referrer?: Address | undefined;
-  developer?: Address | undefined;
   gasLimit?: bigint | undefined;
 }): void {
-  const named = (["referrer", "developer", "gasLimit"] as const)
+  const named = (["referrer", "gasLimit"] as const)
     .filter((field) => request[field] !== undefined);
   if (named.length === 0) return;
   throw new ArcNowError({
@@ -483,10 +522,10 @@ export class FakePort implements ArcNowPort {
         if (port.script.quoteRegistryThrows !== undefined) {
           return Promise.reject(port.script.quoteRegistryThrows as Error);
         }
-        return Promise.resolve(port.script.quoteRegistry ?? [
-          { token: USDC, launchFee: Usdc.parse("2"), active: true },
-          { token: EURC, launchFee: QuoteAmount.parse(EURC, "2"), active: true },
-        ]);
+        // The network's own quotes — mainnet's EURC on a mainnet port — each free to launch in.
+        return Promise.resolve(port.script.quoteRegistry
+          ?? port.config.quoteTokens.map((token) => (
+            { token, launchFee: QuoteAmount.zero(token), active: true })));
       },
     };
   }
@@ -526,9 +565,9 @@ export class FakePort implements ArcNowPort {
         }
         return Promise.resolve(defaultSellQuote(quote, script.sellQuote));
       },
-      previewFeeSplit(fee: QuoteAmount, referrer?: Address, developer?: Address) {
+      previewFeeSplit(fee: QuoteAmount, referrer?: Address) {
         requireSameQuote(fee, quote, `the curve at ${address}`);
-        return Promise.resolve(feeSplit(fee, referrer, developer));
+        return Promise.resolve(feeSplit(fee, referrer));
       },
       feeConfig() {
         return Promise.resolve(feeConfig());
@@ -639,11 +678,16 @@ export class FakePort implements ArcNowPort {
     const port = this;
     const script = this.script;
     const quote = this.quote;
-    const fee = script.poolFee ?? 3000;
+    const fee = script.poolFee ?? POOL_LP_FEE_PIPS;
     const price = QuoteAmount.parse(quote, script.poolPrice ?? "0.0002");
     const impact = script.poolImpactBps ?? 150n;
     const worse = (wad: bigint): bigint => (wad * (10_000n - impact)) / 10_000n;
     const hookVersion = script.hookVersion ?? HOOK_VERSION;
+    /** As the SDK does before reading the hook: its VERSION() first, anything but @4 refused. */
+    const checkHook = (): void => {
+      port.record("read:pool.hookVersion", { hooks: FEE_HOOK });
+      assertHookVersion(hookVersion, `${token}'s pool's fee hook`, FEE_HOOK);
+    };
     // v4's own order unless a test forces one: native first, otherwise the lower address.
     const quoteIsCurrency0 = script.quoteIsCurrency0
       ?? (quote.isNative || quote.address.toLowerCase() < token.toLowerCase());
@@ -657,8 +701,9 @@ export class FakePort implements ArcNowPort {
     const buyQuote = (quoteIn: QuoteAmount): PoolBuyQuote => {
       requireSameQuote(quoteIn, quote, `${token}'s pool`);
       quoteIn.toRaw();
-      // The hook's 1% comes off the input, then the pool's LP fee, then the price.
-      const net = (((quoteIn.wad * 9_900n) / 10_000n) * (1_000_000n - BigInt(fee))) / 1_000_000n;
+      // The hook's 0.80% comes off the input, then the pool's LP fee, then the price.
+      const afterHook = quoteIn.wad - buyFeeFromQuoteIn(quoteIn).wad;
+      const net = (afterHook * (1_000_000n - BigInt(fee))) / 1_000_000n;
       const atSpot = (net * WAD) / price.wad;
       return {
         venue: "pool",
@@ -670,8 +715,9 @@ export class FakePort implements ArcNowPort {
     const sellQuote = (tokensIn: Tokens): PoolSellQuote => {
       const afterLp = (tokensIn.wad * (1_000_000n - BigInt(fee))) / 1_000_000n;
       const gross = worse((afterLp * price.wad) / WAD);
-      // A pool pays whole raw units of its quote.
-      const quoteOut = QuoteAmount.fromWad(quote, (gross * 9_900n) / 10_000n)
+      // A pool pays whole raw units of its quote, net of the hook's 0.80%.
+      const quoteOut = QuoteAmount
+        .fromWad(quote, (gross * (10_000n - POOL_TRADE_FEE_BPS)) / 10_000n)
         .floorToRepresentable();
       return { venue: "pool", tokensIn, quoteOut, feeQuote: sellFeeFromQuoteOut(quoteOut) };
     };
@@ -687,18 +733,21 @@ export class FakePort implements ArcNowPort {
       }),
       quoteToken: () => Promise.resolve(quote),
       quoteIsCurrency0: () => Promise.resolve(quoteIsCurrency0),
-      accruedHookFee() {
+      async accruedHookFee() {
+        checkHook();
         port.record("read:pool.accruedHookFee", { hooks: FEE_HOOK });
-        // As the SDK does: the hook's VERSION() first, and anything but @3 refused.
-        if (!/^arcnow\/arc-now-fee-hook@3\.\d+\.\d+$/.test(hookVersion)) {
-          return Promise.reject(new ArcNowError({
-            code: "UnknownHookVersion",
-            message: `(fake SDK) ${token}'s pool carries a fee hook at ${FEE_HOOK} answering `
-              + `VERSION() "${hookVersion}", which is not arcnow/arc-now-fee-hook@3.x.x`,
-            details: { token, hook: FEE_HOOK, version: hookVersion },
-          }));
-        }
-        return Promise.resolve(port.accrued);
+        return port.accrued;
+      },
+      async fees() {
+        checkHook();
+        port.record("read:pool.fees", { hooks: FEE_HOOK, lpFeePips: fee });
+        // What the SDK reads: feeBps() and feeConfigOf() off the hook, fee off the key.
+        return {
+          hookFeeBps: HOOK_FEE,
+          lpFeePips: fee,
+          totalBps: Bps.of(POOL_TRADE_FEE_BPS + BigInt(fee) / 100n),
+          split: poolFeeConfig(),
+        };
       },
       poolId: () => Promise.resolve(POOL_ID),
       poolManager: () => Promise.resolve(POOL_MANAGER),
@@ -815,7 +864,6 @@ export class FakePort implements ArcNowPort {
           minTokensOut: request.minTokensOut,
           deadline: request.deadline,
           ...(request.referrer === undefined ? {} : { referrer: request.referrer }),
-          ...(request.developer === undefined ? {} : { developer: request.developer }),
           ...(request.gasLimit === undefined ? {} : { gasLimit: request.gasLimit }),
         });
         return { venue: "curve", ...result };
@@ -828,7 +876,6 @@ export class FakePort implements ArcNowPort {
           minQuoteOut: request.minQuoteOut,
           deadline: request.deadline,
           ...(request.referrer === undefined ? {} : { referrer: request.referrer }),
-          ...(request.developer === undefined ? {} : { developer: request.developer }),
         });
         return { venue: "curve", ...result };
       },
@@ -846,7 +893,8 @@ export class FakePort implements ArcNowPort {
       if (script.noTemplateFor?.some((q) => q.toLowerCase() === token.address) === true) {
         throw new ArcNowError({ code: "QuoteNotEnabledOnPlatform", message: "(fake chain) quote not enabled" });
       }
-      const launchFee = QuoteAmount.parse(token, "2");
+      // Launching is free: the registry's fee is zero for every quote arcnow.io registers.
+      const launchFee = QuoteAmount.zero(token);
       const totalCost = launchFee.add(params.initialBuy);
       return {
         quoteToken: token,
@@ -865,7 +913,7 @@ export class FakePort implements ArcNowPort {
       launchFee: (quote) => {
         port.record("read:launchFee", { quote });
         const token = quote === undefined ? USDC : (findQuoteToken(port.config, quote) ?? USDC);
-        return Promise.resolve(QuoteAmount.parse(token, "2"));
+        return Promise.resolve(QuoteAmount.zero(token));
       },
       quoteLaunch(params: LaunchParams) {
         port.record("read:quoteLaunch", { symbol: params.symbol, quote: params.initialBuy.token.symbol });
@@ -938,17 +986,26 @@ export class FakePort implements ArcNowPort {
         return Promise.resolve(templateIn(token));
       },
       registerPlatform(platform: NewPlatform) {
-        port.record("write:registerPlatform", { admin: platform.admin });
+        port.record("write:registerPlatform", {
+          admin: platform.admin,
+          creatorShareBps: platform.creatorShareBps.bps,
+          refShareBps: platform.refShareBps.bps,
+          template: {
+            totalSupply: platform.curve.totalSupply.toString(),
+            target: platform.curve.target.toString(),
+          },
+        });
         return Promise.resolve({
           platform: "0xaaaa0000000000000000000000000000000000aa" as Address,
-          platformShareBps: Bps.of(2500n),
+          platformShareBps: Bps.of(
+            10_000n - 2500n - platform.creatorShareBps.bps - platform.refShareBps.bps),
           txHash: TX,
         });
       },
       protocolSummary: () => Promise.resolve({
         protocolShareBps: Bps.of(2500n),
         protocolRecipient: feeConfig().protocolRecipient,
-        launchFee: Usdc.parse("2"),
+        launchFee: Usdc.ZERO,
       }),
     };
   }
@@ -963,7 +1020,7 @@ export class FakePort implements ArcNowPort {
         platform: NETWORK.contracts.arcnowPlatform,
         migrator: NETWORK.contracts.v4Migrator ?? CURVE,
         quoteToken: quote,
-        launchFee: QuoteAmount.parse(quote, "2"),
+        launchFee: QuoteAmount.zero(quote),
         initialBuy: QuoteAmount.parse(quote, "25"),
         tokensOut: Tokens.parse("125000"),
         blockNumber: 62_230_000n,

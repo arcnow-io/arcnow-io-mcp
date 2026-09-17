@@ -4,7 +4,7 @@
       "command": "npx",
       "args": ["-y", "@arcnow/mcp"],
       "env": {
-        "ARCNOW_MCP_NETWORK": "arc-testnet"
+        "ARCNOW_MCP_NETWORK": "arc-mainnet"
       }
     }
   }

@@ -23,16 +23,19 @@ npx -y @arcnow/mcp --allow-writes   # can spend, if ARCNOW_PRIVATE_KEY is in the
 ```
 
 Every client below runs that same command with `ARCNOW_MCP_NETWORK` set. The
-examples say `arc-mainnet`, where [arcnow.io](https://arcnow.io) is live.
-*The currently published server still ships the previous, testnet-only preset
-and refuses `arc-mainnet` by name; mainnet lands in the next release — until
-then use `arc-testnet`.*
+examples say `arc-mainnet`, where [arcnow.io](https://arcnow.io) is live — Arc
+mainnet, chain 5042. `arc-testnet` is the rehearsal network: the same contracts
+at other addresses, with test funds. With the variable unset the server starts
+on `arc-testnet`, so nobody is pointed at real money by omission.
 
 **Write mode, in every client:** add `--allow-writes` to the arguments and put
 the signing key **in a file** the server reads through `ARCNOW_PRIVATE_KEY_FILE`
 — never the key itself in a client config, which gets committed and
-screenshotted. Read-only needs no key at all. Every variable is in
-[Configuration](#configuration); [`examples/`](examples) has both shapes.
+screenshotted. Read-only needs no key at all. **On `arc-mainnet` every write is
+real money**: the spend caps below are what bounds a mistake, and the server
+says so at startup and in every session. Every variable is in
+[Configuration](#configuration); [`examples/`](examples) has both shapes — the
+writes-enabled one on `arc-testnet`, as a rehearsal.
 
 ### Claude Code
 
@@ -206,13 +209,13 @@ Nine read tools, always published. Six write tools, published only on opt-in.
 | tool | what it answers |
 | --- | --- |
 | `arcnow_network` | Which chain, which contracts, which graduation venues, whether a v4 router is configured for graduated tokens, **and which mode this server is in**. The first call of any session that might trade. |
-| `arcnow_quote_tokens` | The quote tokens a launch may use — native USDC and the ERC-20s the quote registry allowlists, such as EURC — each with its symbol, name, decimals, address, whether it is native, its launch fee in its own units, whether the registry accepts it now, and **this server's spend cap for it**. At most three `eth_call`s. On a chain with no quote registry (the 2.x contracts Arc testnet ran until the multi-quote reset), it says so, shows the error, and lists the network's own quote-token metadata with nothing known to be accepted. |
+| `arcnow_quote_tokens` | The quote tokens a launch may use — native USDC and the ERC-20s the quote registry allowlists, such as EURC — each with its symbol, name, decimals, address, whether it is native, its launch fee in its own units (zero on both networks: launching is free, and the figure is read from the registry rather than assumed), whether the registry accepts it now, and **this server's spend cap for it**. At most three `eth_call`s. On a chain with no quote registry, it says so, shows the error, and lists the network's own quote-token metadata with nothing known to be accepted. |
 | `arcnow_list_tokens` | Recent launches, newest first, from the launchpad's `Launched` log, back to the block it was deployed in. Reports the block window it actually covered — see [the SDK gap](#what-made-a-clean-surface-awkward). |
-| `arcnow_token` | One token in full: metadata, **its quote token** (address, symbol, decimals, native or ERC-20), its curve's parameters (`r0Wad`, `y0Wad`), curve state, price, progress, and **where it trades now** — its curve, its v4 pool (with the router, whether it reaches the pool, the PoolManager, the pool's LP fee and what the fee hook holds accrued), or nowhere. Takes a token *or* a curve address. |
-| `arcnow_quote_buy` | What an amount of the token's quote (`quoteIn`) would buy, wherever the token trades. On a curve: tokens out, the 1% fee and exactly who receives it, the average fill price, minimum-out floors at four tolerances. In a pool: a quote that says it is a pool quote, with arcnow.io's 1% and the pool's own LP fee apart, the average fill against the pool's spot price, and the price impact. |
+| `arcnow_token` | One token in full: metadata, **its quote token** (address, symbol, decimals, native or ERC-20), its curve's parameters (`r0Wad`, `y0Wad`), curve state, price, progress, and **where it trades now** — its curve, its v4 pool (with the router, whether it reaches the pool, the PoolManager, what a trade there costs — the hook's 0.80% and the pool's 0.20% LP fee, read off the pool — how the hook splits its part, and what it holds accrued), or nowhere. Takes a token *or* a curve address. |
+| `arcnow_quote_buy` | What an amount of the token's quote (`quoteIn`) would buy, wherever the token trades. On a curve: tokens out, the 1% fee split four ways — creator, platform, referrer, protocol — with exactly who receives each share, the average fill price, minimum-out floors at four tolerances. In a pool: a quote that says it is a pool quote, with the fee hook's 0.80% and the pool's own 0.20% LP fee apart (1.00% in all, both read off the pool), the hook's three-way split, the average fill against the pool's spot price, and the price impact. |
 | `arcnow_quote_sell` | The same for a sell — plus, on a curve, that selling needs no approval, ever, and in a pool, that it does, and how much the holder has approved already. |
-| `arcnow_quote_launch` | What a launch in a given `quote` (native USDC by default, or an ERC-20 by symbol or address) would cost before anything is spent, split into the flat fee and the initial buy's own trade fee, with the predicted token and curve addresses. |
-| `arcnow_platform` | A platform's fee split, its default migrator and its curve template — every share printed both as bps of the fee and as a percentage of a trade. |
+| `arcnow_quote_launch` | What a launch in a given `quote` (native USDC by default, or an ERC-20 by symbol or address) would cost before anything is spent: the launch fee the registry reports (zero — launching is free), the initial buy and its own trade fee, with the predicted token and curve addresses. |
+| `arcnow_platform` | A platform's four-way fee split, its default migrator and its curve template — every share printed both as bps of the fee and as a percentage of a trade. |
 | `arcnow_list_platforms` | The registry's actual enumeration. Complete, unlike the token list. |
 
 The read tools are the valuable part. An assistant that can answer *what is this
@@ -227,13 +230,16 @@ mistake that costs money:
   reports an *average fill price* next to the spot price, and the tool
   descriptions tell the model to quote rather than multiply.
 - **A share of the fee is not a share of the trade.** 3000 bps of the fee is
-  0.30% of a trade. Both are printed, every time.
+  0.30% of a trade. Both are printed, every time. The fee has **four parties** —
+  creator, platform, referrer, protocol; arcnow.io's own split is 3000 / 3500 /
+  1000 / 2500 — and no developer share: no tool takes a `developer`.
 - **Graduated and migrated are different states.** A curve can have stopped
   trading permanently while its pool was never created, and then the token
   trades *nowhere*. That is reported as its own thing, with the rescue named.
 - **A pool quote is not a curve quote.** It says so, and it names two charges,
-  not one: arcnow.io's 1%, taken in the pool's quote by the fee hook, and the pool's own
-  Uniswap LP fee on top.
+  not one: the fee hook's **0.80%**, taken in the pool's quote and split creator /
+  platform / protocol, and the pool's own **0.20%** Uniswap LP fee — 1.00% in all,
+  the same as the curve charged. Both rates are read off the pool, never assumed.
 
 ### Write
 
@@ -272,8 +278,8 @@ set a boolean — but does make the assertion explicit in the transcript.
    Zero means "fill me at any price", which on a public mempool is a donation,
    so it has to be typed rather than omitted.
 5. **Nothing that does not apply.** A curve trade pays the sender and has no
-   `recipient`; a pool swap has no `referrer` or `developer` and cannot graduate
-   anything, so `gasLimit` guards nothing there. Each is **refused** on the
+   `recipient`; a pool swap has no `referrer` and cannot graduate anything, so
+   `gasLimit` guards nothing there. Each is **refused** on the
    venue it does not exist on, before anything is quoted or sent — never
    silently dropped. The SDK refuses the same things; this server says so first.
 6. **The report.** Each tool states the exact cost and the exact effect, and
@@ -311,15 +317,21 @@ four tools work across that line. Three states, told apart out loud:
 | state | quote | buy / sell |
 | --- | --- | --- |
 | on its curve | a curve quote, as before | through the curve; `recipient` refused |
-| graduated **and** migrated | a pool quote, labelled as one | through arcnow.io's router; `gasLimit`, `referrer`, `developer` refused |
+| graduated **and** migrated | a pool quote, labelled as one | through arcnow.io's router; `gasLimit`, `referrer` refused |
 | graduated, **not** migrated | refused: tradeable nowhere until `migrate()` | refused, naming `arcnow_migrate` |
 
 **What a pool quote contains.** The SDK prices a pool trade by simulating the
 real swap through the router, so the figures are the real fill with two charges
-inside them. The quote takes them back out and names each: arcnow.io's 1%, which
-the fee hook takes in the pool's quote, and the pool's own LP fee — the pool key's `fee`, in
-hundredths of a bip — which Uniswap charges on top. It shows the average fill
-price, the pool's spot price, and the price impact between them. The SDK has no
+inside them. The quote takes them back out and names each: the fee hook's 0.80%,
+which it takes in the pool's quote and splits creator 5000 / platform 1875 /
+protocol 3125 bps (a pool swap has no referrer), and the pool's own 0.20% LP fee
+— the pool key's `fee`, in hundredths of a bip — which Uniswap charges and the
+pool's liquidity keeps. 1.00% in all, the same as the curve. Every rate comes
+from the SDK's `Pool.fees()`, which reads the hook's `feeBps()` and
+`feeConfigOf()` and the key; this server holds no fee constant, so a pool whose
+key carries another LP fee is reported at the fee it carries. It shows the
+average fill price, the pool's spot price, and the price impact between them.
+The SDK has no
 reader for a pool's price, so the spot price is the SDK's own quote of a
 probe buy with both fees taken out — 0.000001 of an 18-decimal quote, or 10,000 raw
 units of a smaller one (0.01 EURC), so the fees' raw-unit rounding stays below one
@@ -362,32 +374,35 @@ decoded contract error or revert *failed on-chain*. `RpcFailure` *could not
 reach the chain*: the public endpoint rate-limits, and that says nothing about
 the token.
 
-### One curve
+### One curve, on two networks
 
 arcnow.io has one bonding curve — the constant-product curve,
-`arcnow/bonding-curve@3.x.x`, priced in a quote token, with parameters `r0Wad`
+`arcnow/bonding-curve@4.x.x`, priced in a quote token, with parameters `r0Wad`
 (the virtual quote reserve at launch, in WAD) and `y0Wad` (the virtual token
 reserve at launch) — launched through one contract stack, and a fee hook,
-`arcnow/arc-now-fee-hook@3.x.x`, that
-accrues each fee as a PoolManager claim and pays it out at the start of a later
-swap.
+`arcnow/arc-now-fee-hook@4.x.x`, that takes its 0.80% in the pool, accrues each
+fee as a PoolManager claim and pays it out at the start of a later swap. The same
+build is live on Arc mainnet (`arc-mainnet`) and Arc testnet (`arc-testnet`), at
+different addresses; a token address from one means nothing on the other, and
+the server's instructions say which network a session is on.
 
 - **Nothing a tool prints names a curve kind or a stack.** There is one of
   each. `arcnow_token` prints the curve's own parameters, and a pool trade
   reports the fees it paid out from earlier trades (`FeesDistributed`) apart
   from the trader's fill.
 - **Any other version is refused by name, and never priced.** A curve or a
-  platform of another version — the 2.x contracts Arc testnet ran until the
-  multi-quote reset and the retired linear curve, `@1.x.x`, included —
-  is the SDK's `UnknownCurveVersion`, naming the version, before any quote or
-  send. A fee hook of another version is `UnknownHookVersion`, and its accrual
-  is not read.
+  platform of another version — the retired multi-quote stack, `@3.x.x`, which
+  carried a developer share and whose data was wiped; the `@2.x.x` contracts
+  before it; the retired linear curve, `@1.x.x` — is the SDK's
+  `UnknownCurveVersion`, naming the version, before any quote or send. A fee hook
+  of another version — the `@3.x.x` hook that charged 1% in the pool included —
+  is `UnknownHookVersion`, and neither its accrual nor its rates are read.
 - **An address that is not a curve is refused by name.** The SDK's
   `AddressIsNotACurve` for an arcnow.io token's address is followed to its curve;
   for anything else — an ordinary ERC-20, an account, nothing at all — it is the
   refusal, saying the address is not an arcnow.io token either.
 - **`arcnow_list_tokens` reads the one launchpad**, back to the block its stack
-  was deployed in (61,911,405 on Arc testnet).
+  was deployed in (21,179,866 on Arc mainnet, 62,386,232 on Arc testnet).
 
 ---
 
@@ -399,7 +414,7 @@ where an operator's decisions belong. See
 
 | variable | default | what it does |
 | --- | --- | --- |
-| `ARCNOW_MCP_NETWORK` | `arc-testnet` | The network preset. `arc-mainnet` is **refused at startup, by name** — arcnow.io is not deployed to one, and this server will not invent an address. |
+| `ARCNOW_MCP_NETWORK` | `arc-testnet` | The network preset: `arc-mainnet` (Arc mainnet, chain 5042, where arcnow.io is live — **real money**) or `arc-testnet` (the rehearsal, chain 5042002). Both come from the SDK's `networks.json`; a name it does not know refuses to start, naming the two it does. The default is the rehearsal on purpose. |
 | `ARCNOW_MCP_NETWORK_FILE` | unset | A path to a JSON document in the SDK's `CustomNetwork` shape, for a deployment no preset names — a local anvil stack, or a stack deployed onto a fork. **Mutually exclusive with a preset name.** See [below](#a-network-the-sdk-has-no-preset-for). |
 | `ARCNOW_RPC_URL` | the preset's endpoint | Override the endpoint. Redacted of credentials before it is ever printed. |
 | `ARCNOW_MCP_ALLOW_WRITES` | unset | `1` enables the write tools. `--allow-writes` does the same. |
@@ -422,7 +437,9 @@ in EURC. So every quote token has its own cap, in its own units:
 - `ARCNOW_MCP_MAX_SPEND_USDC` caps native USDC, and defaults to `100`.
 - `ARCNOW_MCP_MAX_SPEND_<SYMBOL>` caps each other quote — `ARCNOW_MCP_MAX_SPEND_EURC=50`
   is 50 EURC. The symbol is upper-cased; a character that is not a letter or a
-  digit is written `_`.
+  digit is written `_`. The cap is matched to the network's own token by
+  address: on `arc-mainnet` that is EURC at `0xbEf5f6d5…`, on `arc-testnet` at
+  `0x89b50855…`, each read from the preset.
 
 It fails closed, four ways:
 
@@ -439,8 +456,8 @@ It fails closed, four ways:
 - **Two quote tokens of the network sharing a symbol refuses to start** it: one
   variable cannot mean two caps.
 
-What counts: a launch spends its `totalCost` — the launch fee plus the initial
-buy, in the launch's quote; a buy spends its `quoteIn`. For an ERC-20 quote the
+What counts: a launch spends its `totalCost` — the initial buy plus any launch
+fee (zero on both networks), in the launch's quote; a buy spends its `quoteIn`. For an ERC-20 quote the
 SDK approves exactly that spend, so the same check covers the approve. The
 caller's own `maxTotalCost` is read in the same quote. The startup banner,
 `arcnow_network` and `arcnow_quote_tokens` show every cap, and
@@ -450,7 +467,7 @@ caller's own `maxTotalCost` is read in the same quote. The startup banner,
 ### A network the SDK has no preset for
 
 `ARCNOW_MCP_NETWORK_FILE=/path/to/network.json` points the server at a
-deployment by its addresses — a local anvil stack, or the 3.x stack this
+deployment by its addresses — a local anvil stack, or the stack this
 repository's fork proof deploys onto a fork of Arc testnet:
 
 ```json
@@ -502,7 +519,7 @@ token. Gas is always native USDC, whatever a token's quote.
 `@arcnow/sdk` is published to npm from
 [arcnow-io/arcnow-io-sdk](https://github.com/arcnow-io/arcnow-io-sdk), one tagged
 release per version, and this server depends on it at an **exact version** —
-`"@arcnow/sdk": "0.1.3"`, never `^0.1.3`. The tool descriptions promise what one
+`"@arcnow/sdk": "0.2.0"`, never `^0.2.0`. The tool descriptions promise what one
 known SDK does; a range would let `npm install` move the code under them with no
 commit here saying so. Moving the pin is a pull request.
 
@@ -511,10 +528,10 @@ commit here saying so. Moving the pin is a pull request.
 ```json
 "sdk": {
   "package": "@arcnow/sdk",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "integrity": "sha512-…",
   "public_repo": "arcnow-io/arcnow-io-sdk",
-  "tag": "v0.1.3",
+  "tag": "v0.2.0",
   "why": ["what this server uses from that SDK, in prose"]
 }
 ```
@@ -548,7 +565,8 @@ what can be proved offline:
 - **A write refuses without the opt-in**, names `--allow-writes` and
   `ARCNOW_PRIVATE_KEY`, and has sent nothing.
 - **Both spend ceilings stop a transaction**, on a curve and in a pool, per
-  quote token; a typo'd cap variable refuses to start; a USDC cap does not apply
+  quote token, on either preset — mainnet's EURC is capped by its mainnet
+  address; a typo'd cap variable refuses to start; a USDC cap does not apply
   to EURC or the reverse.
 - **Every amount is labelled with its own quote**, an input with more decimals
   than its quote is refused, and an ERC-20 approve is reported whether it was
@@ -556,8 +574,13 @@ what can be proved offline:
 - **The gas trap is handled**, the venues are told apart (a stranded token is
   refused everywhere with `arcnow_migrate` named), the sell approval is never
   sent without `approveRouter: true` and never for more than the amount sold,
-  and the reports say true things: fees broken out, average fill price apart
-  from spot, graduated apart from migrated.
+  and the reports say true things: a curve fee broken out four ways, a pool's
+  0.80% and 0.20% read off the pool and never assumed, a free launch printed
+  from the registry's zero, average fill price apart from spot, graduated apart
+  from migrated.
+- **Both presets resolve** to the SDK's live deployments, `arc-mainnet` says it
+  is real money, and nothing of one network's addresses appears in a report
+  about the other.
 - **The wire works**: a real MCP client against a real MCP server over an
   in-memory transport.
 
